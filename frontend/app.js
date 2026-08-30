@@ -169,7 +169,7 @@ analyzeBtn.addEventListener("click", async () => {
     if (!data.findings || data.findings.length === 0) {
       uploadResults.innerHTML = `<p class="upload-empty">No known danger patterns matched (CWE-119/120/190/416 templates). Doesn't mean the code is safe — just that nothing here matches the current rule set.</p>`;
     } else {
-      uploadResults.innerHTML = data.findings.map((f) => `
+      let html = data.findings.map((f) => `
         <div class="finding-card">
           <div class="finding-head">
             <span class="cwe-tag">${f.cwe}</span>
@@ -181,6 +181,20 @@ analyzeBtn.addEventListener("click", async () => {
           <div class="rationale">${f.patch_rationale}</div>
         </div>
       `).join("");
+
+      if (data.patched_source) {
+        html += `
+          <div class="finding-card" style="border-left-color: var(--ok);">
+            <div class="finding-head">
+              <strong>Fully Corrected File</strong>
+            </div>
+            <p class="desc">Combines every fixable finding above into one file (${data.patched_applied.join(", ")}). Findings with no safe automatic fix (e.g. strcpy) are left as-is — check those manually.</p>
+            <pre>${escapeHtml(data.patched_source)}</pre>
+          </div>
+        `;
+      }
+
+      uploadResults.innerHTML = html;
     }
   } catch (err) {
     uploadResults.innerHTML = `<p class="upload-empty">Error contacting backend: ${err.message}</p>`;
