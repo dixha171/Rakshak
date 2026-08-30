@@ -143,9 +143,14 @@ async def analyze_upload(file: UploadFile = File(None), source: str = Form(None)
             }
         )
 
+    patched_source, applied_labels = patch_agent.apply_all(findings, source_text)
+    combined_patch_available = bool(applied_labels) and patched_source != source_text
+
     return {
         "filename": filename,
         "finding_count": len(findings),
         "findings": results,
+        "patched_source": patched_source if combined_patch_available else None,
+        "patched_applied": applied_labels,
         "note": "Static analysis + suggested patch only. Uploaded code is never compiled or executed.",
     }
