@@ -33,6 +33,7 @@ class VulnerabilityFinding:
     description: str = ""
     severity: Severity = Severity.MEDIUM
     source: str = "static_analyzer"  # or "crash_analyzer"
+    language: str = "c"  # e.g. "c", "python", "javascript", "verilog", "vhdl"
     detected_at: float = field(default_factory=time.time)
 
 
