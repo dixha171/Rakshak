@@ -101,7 +101,29 @@ All backend selection is via environment variables (see `kavach/config.py`):
 | `KAVACH_MAX_RETRIES` | `3` | Retry/backtrack attempts per finding |
 | `KAVACH_LEDGER_DB` | `kavach_audit.sqlite3` | Audit ledger path |
 
-The default `air_gapped` backend uses only the heuristic patch-template library in `patch_agent.py` — no network calls, no API keys required. Cloud/local LLM-assisted patching is a configuration switch away once you wire in your own API key.
+The default `air_gapped` backend uses only the heuristic patch-template library in `patch_agent.py` — no network calls, no API keys required.
+
+## LLM-assisted patching
+
+For CWEs the heuristic template library doesn't cover, `PatchAgent` falls back to an LLM-assisted path (`kavach/agents/llm_client.py`, stdlib `urllib` only — no SDK dependency) whenever `KAVACH_BACKEND` is set to a network-enabled tier:
+
+```bash
+# Cloud Claude
+export KAVACH_BACKEND=cloud_claude
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Cloud OpenAI
+export KAVACH_BACKEND=cloud_openai
+export OPENAI_API_KEY=sk-...
+
+# Local Ollama (no key needed, just a running `ollama serve`)
+export KAVACH_BACKEND=local_ollama
+export OLLAMA_HOST=http://localhost:11434
+export KAVACH_ANTHROPIC_MODEL=deepseek-coder:6.7b   # or set KAVACH_OLLAMA_MODEL
+```
+
+The agent sends the full vulnerable file plus the finding's CWE/function/description, asks for the complete corrected file back in a single code fence, diffs it against the original, and hands the result to the same Triple-Lock verifier as the heuristic path — an LLM-generated patch that fails exploit replay or regression gets rolled back and retried exactly like a heuristic one. Any backend failure (missing key, HTTP error, malformed response) raises `LLMError` internally and degrades to an empty patch candidate rather than crashing the pipeline, so `air_gapped` operation is never at risk from a misconfigured network tier.
+
 
 ## Extending to real codebases
 

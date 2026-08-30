@@ -32,7 +32,7 @@ class KavachConfig:
 
     # Cloud (Claude)
     anthropic_api_key: str | None = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY"))
-    anthropic_model: str = field(default_factory=lambda: os.environ.get("KAVACH_ANTHROPIC_MODEL", "claude-sonnet-4-6"))
+    anthropic_model: str = field(default_factory=lambda: os.environ.get("KAVACH_ANTHROPIC_MODEL", "claude-sonnet-5"))
 
     # Cloud (OpenAI)
     openai_api_key: str | None = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY"))
