@@ -161,6 +161,7 @@ main {
 .card.certified::before { background: var(--ok); }
 .card.failed::before { background: var(--danger); }
 .card.running::before { background: var(--brass); }
+.card.pending-review::before { background: var(--brass); }
 
 .card-head {
   display: flex;
@@ -301,6 +302,48 @@ main {
   flex-direction: column;
   gap: 10px;
   width: 160px;
+}
+
+.upload-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#language-select {
+  background: #0A0E0D;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px;
+}
+
+.pipeline-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--steel);
+  border: 1px solid var(--steel-dim);
+  padding: 1px 6px;
+  border-radius: 2px;
+  margin-left: 6px;
+}
+.pipeline-tag.hardware { color: var(--brass); border-color: var(--brass-dim); }
+
+.review-banner {
+  background: rgba(201, 161, 91, 0.08);
+  border: 1px solid var(--brass-dim);
+  color: var(--brass);
+  font-size: 12px;
+  padding: 10px 12px;
+  margin-top: 12px;
+  line-height: 1.5;
+}
+.review-banner ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
 }
 
 .file-btn {
