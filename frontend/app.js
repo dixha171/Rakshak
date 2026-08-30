@@ -1,4 +1,8 @@
+// After you deploy the backend (e.g. on Render), set this to its URL,
+// e.g. "https://kavach-backend.onrender.com". Leave empty to call the
+// same origin the dashboard is served from.
 const API_BASE = "https://rakshak-847v.onrender.com";
+
 const grid = document.getElementById("benchmark-grid");
 const backendStatusEl = document.getElementById("backend-status");
 const backendLabelEl = document.getElementById("backend-label");
@@ -130,3 +134,64 @@ async function loadLedger() {
 
 loadBenchmarks();
 loadLedger();
+
+// --- Upload & analyze ---
+const uploadTextarea = document.getElementById("upload-textarea");
+const uploadFileInput = document.getElementById("upload-file");
+const analyzeBtn = document.getElementById("analyze-btn");
+const uploadResults = document.getElementById("upload-results");
+
+uploadFileInput.addEventListener("change", () => {
+  const file = uploadFileInput.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { uploadTextarea.value = reader.result; };
+  reader.readAsText(file);
+});
+
+analyzeBtn.addEventListener("click", async () => {
+  const source = uploadTextarea.value.trim();
+  if (!source) {
+    uploadResults.innerHTML = `<p class="upload-empty">Paste some C source or choose a file first.</p>`;
+    return;
+  }
+
+  analyzeBtn.disabled = true;
+  analyzeBtn.textContent = "ANALYZING…";
+  uploadResults.innerHTML = `<p class="upload-empty">Scanning for known danger patterns…</p>`;
+
+  try {
+    const formData = new FormData();
+    formData.append("source", source);
+    const res = await fetch(`${API_BASE}/api/analyze`, { method: "POST", body: formData });
+    const data = await res.json();
+
+    if (!data.findings || data.findings.length === 0) {
+      uploadResults.innerHTML = `<p class="upload-empty">No known danger patterns matched (CWE-119/120/190/416 templates). Doesn't mean the code is safe — just that nothing here matches the current rule set.</p>`;
+    } else {
+      uploadResults.innerHTML = data.findings.map((f) => `
+        <div class="finding-card">
+          <div class="finding-head">
+            <span class="cwe-tag">${f.cwe}</span>
+            <strong>${f.function || "(top-level)"}</strong>
+            <span style="color:var(--text-dim); font-size:11px;">line ${f.line}</span>
+          </div>
+          <p class="desc">${f.description}</p>
+          ${f.patch_diff ? `<pre>${escapeHtml(f.patch_diff)}</pre>` : ""}
+          <div class="rationale">${f.patch_rationale}</div>
+        </div>
+      `).join("");
+    }
+  } catch (err) {
+    uploadResults.innerHTML = `<p class="upload-empty">Error contacting backend: ${err.message}</p>`;
+  } finally {
+    analyzeBtn.disabled = false;
+    analyzeBtn.textContent = "ANALYZE";
+  }
+});
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
