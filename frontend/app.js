@@ -38,27 +38,40 @@ function renderCard(bench) {
     <pre class="log-panel"></pre>
   `;
   const btn = card.querySelector(".run-btn");
-  btn.addEventListener("click", () => runTarget(bench.name, card, btn));
+  btn.onclick = () => runTarget(bench.name, card, btn, false);
   return card;
 }
 
-async function runTarget(name, card, btn) {
+async function runTarget(name, card, btn, approve = false) {
   btn.disabled = true;
-  btn.textContent = "RUNNING…";
+  btn.textContent = approve ? "APPLYING…" : "RUNNING…";
   card.className = "card running";
   const logPanel = card.querySelector(".log-panel");
   logPanel.classList.add("visible");
-  logPanel.textContent = "dispatching to orchestrator…";
+  logPanel.textContent = approve ? "human approval received, applying…" : "dispatching to orchestrator…";
 
   try {
     const res = await fetch(`${API_BASE}/api/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: name }),
+      body: JSON.stringify({ target: name, approve }),
     });
     const data = await res.json();
 
-    logPanel.textContent = (data.log || []).join("\n");
+    let logText = (data.log || []).join("\n");
+    logPanel.textContent = logText;
+
+    if (data.state === "pending_review") {
+      card.className = "card pending-review";
+      setLock(card, "replay", false);
+      setLock(card, "regression", false);
+      setLock(card, "cert", false);
+      btn.textContent = "APPROVE & APPLY";
+      btn.onclick = () => runTarget(name, card, btn, true);
+      loadLedger();
+      return;
+    }
+
     const certified = data.state === "certified";
     card.className = "card " + (certified ? "certified" : "failed");
 
@@ -67,12 +80,14 @@ async function runTarget(name, card, btn) {
     setLock(card, "cert", certified);
 
     btn.textContent = certified ? "CERTIFIED ✓" : "RUN PIPELINE (retry)";
+    btn.onclick = () => runTarget(name, card, btn, false);
     loadLedger();
   } catch (err) {
     logPanel.textContent = "Error contacting backend: " + err.message +
       "\n\nStart the API with:\n  uvicorn backend.app.main:app --reload --port 8000";
     card.className = "card failed";
     btn.textContent = "RUN PIPELINE (retry)";
+    btn.onclick = () => runTarget(name, card, btn, false);
   } finally {
     btn.disabled = false;
   }
@@ -138,8 +153,26 @@ loadLedger();
 // --- Upload & analyze ---
 const uploadTextarea = document.getElementById("upload-textarea");
 const uploadFileInput = document.getElementById("upload-file");
+const languageSelect = document.getElementById("language-select");
 const analyzeBtn = document.getElementById("analyze-btn");
 const uploadResults = document.getElementById("upload-results");
+
+async function loadLanguages() {
+  try {
+    const res = await fetch(`${API_BASE}/api/languages`);
+    if (!res.ok) throw new Error("bad response");
+    const langs = await res.json();
+    langs.forEach((l) => {
+      const opt = document.createElement("option");
+      opt.value = l.id;
+      opt.textContent = `${l.name} (${l.pipeline})`;
+      languageSelect.appendChild(opt);
+    });
+  } catch {
+    // Auto-detect option alone still works if this fails.
+  }
+}
+loadLanguages();
 
 uploadFileInput.addEventListener("change", () => {
   const file = uploadFileInput.files[0];
@@ -152,7 +185,7 @@ uploadFileInput.addEventListener("change", () => {
 analyzeBtn.addEventListener("click", async () => {
   const source = uploadTextarea.value.trim();
   if (!source) {
-    uploadResults.innerHTML = `<p class="upload-empty">Paste some C source or choose a file first.</p>`;
+    uploadResults.innerHTML = `<p class="upload-empty">Paste some code or choose a file first.</p>`;
     return;
   }
 
@@ -163,11 +196,12 @@ analyzeBtn.addEventListener("click", async () => {
   try {
     const formData = new FormData();
     formData.append("source", source);
+    if (languageSelect.value) formData.append("language", languageSelect.value);
     const res = await fetch(`${API_BASE}/api/analyze`, { method: "POST", body: formData });
     const data = await res.json();
 
     if (!data.findings || data.findings.length === 0) {
-      uploadResults.innerHTML = `<p class="upload-empty">No known danger patterns matched (CWE-119/120/190/416 templates). Doesn't mean the code is safe — just that nothing here matches the current rule set.</p>`;
+      uploadResults.innerHTML = `<p class="upload-empty">No known danger patterns matched for the detected language (${data.language || "unknown"}). Doesn't mean the code is safe — just that nothing here matches the current rule set.</p>`;
     } else {
       let html = data.findings.map((f) => `
         <div class="finding-card">
@@ -175,10 +209,17 @@ analyzeBtn.addEventListener("click", async () => {
             <span class="cwe-tag">${f.cwe}</span>
             <strong>${f.function || "(top-level)"}</strong>
             <span style="color:var(--text-dim); font-size:11px;">line ${f.line}</span>
+            <span class="pipeline-tag ${f.pipeline || ""}">${f.pipeline || ""}</span>
           </div>
           <p class="desc">${f.description}</p>
           ${f.patch_diff ? `<pre>${escapeHtml(f.patch_diff)}</pre>` : ""}
           <div class="rationale">${f.patch_rationale}</div>
+          ${f.requires_human_review ? `
+            <div class="review-banner">
+              ⚠ Requires human review before applying:
+              <ul>${f.review_reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>
+            </div>
+          ` : ""}
         </div>
       `).join("");
 
@@ -188,7 +229,7 @@ analyzeBtn.addEventListener("click", async () => {
             <div class="finding-head">
               <strong>Fully Corrected File</strong>
             </div>
-            <p class="desc">Combines every fixable finding above into one file (${data.patched_applied.join(", ")}). Findings with no safe automatic fix (e.g. strcpy) are left as-is — check those manually.</p>
+            <p class="desc">Combines every fixable, non-gated finding above into one file (${data.patched_applied.join(", ")}). Findings needing human review, or with no safe automatic fix, are left as-is — check those manually.</p>
             <pre>${escapeHtml(data.patched_source)}</pre>
             <button class="run-btn" id="download-patched-btn" style="margin-top:8px;">DOWNLOAD CORRECTED FILE</button>
           </div>
@@ -200,8 +241,8 @@ analyzeBtn.addEventListener("click", async () => {
       if (data.patched_source) {
         const downloadBtn = document.getElementById("download-patched-btn");
         downloadBtn.addEventListener("click", () => {
-          const baseName = (data.filename || "uploaded.c").replace(/\.[^./]+$/, "");
-          const ext = (data.filename || "uploaded.c").match(/\.[^./]+$/)?.[0] || ".c";
+          const baseName = (data.filename || "uploaded.txt").replace(/\.[^./]+$/, "");
+          const ext = (data.filename || "uploaded.txt").match(/\.[^./]+$/)?.[0] || ".txt";
           const downloadName = `${baseName}_patched${ext}`;
 
           const blob = new Blob([data.patched_source], { type: "text/plain" });
