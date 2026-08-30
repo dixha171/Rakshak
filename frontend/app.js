@@ -1,5 +1,4 @@
-const API_BASE = window.location.origin.includes("null") ? "http://localhost:8000" : "";
-
+const API_BASE = "";
 const grid = document.getElementById("benchmark-grid");
 const backendStatusEl = document.getElementById("backend-status");
 const backendLabelEl = document.getElementById("backend-label");
