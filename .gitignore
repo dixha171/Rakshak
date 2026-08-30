@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+build/
+.kavach_backups/
+kavach_audit.sqlite3
+*.sqlite3
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+node_modules/

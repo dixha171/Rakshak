@@ -1,0 +1,24 @@
+services:
+  kavach-backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      - KAVACH_BACKEND=air_gapped
+      - KAVACH_CC=gcc
+    working_dir: /app
+
+  kavach-frontend:
+    image: python:3.12-slim
+    working_dir: /app/frontend
+    volumes:
+      - ./frontend:/app/frontend
+    ports:
+      - "8080:8080"
+    command: ["python3", "-m", "http.server", "8080"]
+    depends_on:
+      - kavach-backend
