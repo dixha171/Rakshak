@@ -4,8 +4,13 @@ sandbox verification -> ledger together, with retry/backtracking when a
 generated patch fails verification.
 
 State flow per finding:
-    TRIAGED -> PATCH_SYNTHESIZED -> APPLIED -> VERIFYING -> CERTIFIED
+    TRIAGED -> PATCH_SYNTHESIZED -> [PENDING_REVIEW, if gated] -> APPLIED -> VERIFYING -> CERTIFIED
     On verification failure: VERIFYING -> ROLLED_BACK -> retry (up to max_retries) -> ABANDONED
+
+See kavach.agents.review_gate for the exact criteria that route a finding
+to PENDING_REVIEW instead of auto-applying. A gated finding is never
+applied to disk until the caller explicitly re-invokes run() with
+force_apply=True (the "a human approved this" signal).
 """
 from __future__ import annotations
 
@@ -21,6 +26,7 @@ from kavach.models import (
     AuditRecord,
 )
 from kavach.agents.patch_agent import PatchAgent
+from kavach.agents import review_gate
 from kavach.sandbox.patcher import Patcher
 from kavach.sandbox.verifier import Verifier
 from kavach.ledger.audit_ledger import AuditLedger
@@ -29,6 +35,7 @@ from kavach.ledger.audit_ledger import AuditLedger
 class RunState(str, Enum):
     TRIAGED = "triaged"
     PATCH_SYNTHESIZED = "patch_synthesized"
+    PENDING_REVIEW = "pending_review"
     APPLIED = "applied"
     VERIFYING = "verifying"
     CERTIFIED = "certified"
@@ -44,6 +51,7 @@ class RunOutcome:
     verification: VerificationResult | None = None
     attempts: int = 0
     log: list[str] = field(default_factory=list)
+    review_reasons: list[str] = field(default_factory=list)
 
 
 class Orchestrator:
@@ -67,6 +75,7 @@ class Orchestrator:
         source_path: str,
         test_module: str,
         header_path: str | None = None,
+        force_apply: bool = False,
     ) -> RunOutcome:
         outcome = RunOutcome(finding=finding, state=RunState.TRIAGED)
 
@@ -93,6 +102,24 @@ class Orchestrator:
                 )
                 outcome.state = RunState.ABANDONED
                 break
+
+            decision = review_gate.evaluate(finding)
+            if decision.requires_review and not force_apply:
+                outcome.state = RunState.PENDING_REVIEW
+                outcome.review_reasons = decision.reasons
+                outcome.log.append("human review required before this patch can be applied:")
+                for reason in decision.reasons:
+                    outcome.log.append(f"  - {reason}")
+                self.ledger.record(
+                    AuditRecord(
+                        finding_id=finding.id,
+                        patch_id=patch.id,
+                        verification_id="",
+                        patch_sha256="",
+                        outcome="pending_review",
+                    )
+                )
+                return outcome  # nothing touched on disk; wait for explicit approval
 
             backup_path = self.patcher.apply(source_path, patch)
             header_backup_path = None
