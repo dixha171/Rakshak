@@ -30,22 +30,26 @@
   <main>
     <section class="intro">
       <h1>Operator Console</h1>
-      <p>Three tactical C/C++ targets, each shipped with a live memory-safety defect. Trigger a run to watch KAVACH triage, patch, and certify each one under the Triple-Lock: <strong>Exploit Replay</strong> → <strong>Regression Suite</strong> → <strong>Certification</strong>.</p>
+      <p>Three tactical C/C++ targets, each shipped with a live memory-safety defect. Trigger a run to watch KAVACH triage, patch, and certify each one under the Triple-Lock: <strong>Exploit Replay</strong> → <strong>Regression Suite</strong> → <strong>Certification</strong>. Findings touching sensitive data (auth, secrets, crypto) or the hardware pipeline (Verilog/VHDL) stop for human review instead of auto-certifying.</p>
     </section>
 
     <section class="grid" id="benchmark-grid"></section>
 
     <section class="upload-section">
       <div class="upload-head">
-        <h2>Analyze Your Own C File</h2>
-        <p class="upload-note">Static analysis + a suggested patch only — uploaded code is never compiled or executed on the server.</p>
+        <h2>Analyze Your Own Code</h2>
+        <p class="upload-note">Static analysis + a suggested patch only — uploaded code is never compiled or executed on the server. Supports both the software pipeline (C, Python, JavaScript) and the hardware pipeline (Verilog, VHDL); hardware findings always require human review since there's no simulator here to prove a fix.</p>
       </div>
       <div class="upload-body">
-        <textarea id="upload-textarea" placeholder="Paste C source here, or choose a file below…"></textarea>
+        <textarea id="upload-textarea" placeholder="Paste code here, or choose a file below…"></textarea>
         <div class="upload-controls">
+          <label class="upload-label" for="language-select">Language</label>
+          <select id="language-select">
+            <option value="">Auto-detect</option>
+          </select>
           <label class="file-btn">
             CHOOSE FILE
-            <input type="file" id="upload-file" accept=".c,.h,.cc,.cpp" hidden />
+            <input type="file" id="upload-file" accept=".c,.h,.cc,.cpp,.py,.js,.mjs,.jsx,.ts,.v,.sv,.vh,.vhd,.vhdl" hidden />
           </label>
           <button class="run-btn" id="analyze-btn">ANALYZE</button>
         </div>
