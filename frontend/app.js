@@ -190,11 +190,31 @@ analyzeBtn.addEventListener("click", async () => {
             </div>
             <p class="desc">Combines every fixable finding above into one file (${data.patched_applied.join(", ")}). Findings with no safe automatic fix (e.g. strcpy) are left as-is — check those manually.</p>
             <pre>${escapeHtml(data.patched_source)}</pre>
+            <button class="run-btn" id="download-patched-btn" style="margin-top:8px;">DOWNLOAD CORRECTED FILE</button>
           </div>
         `;
       }
 
       uploadResults.innerHTML = html;
+
+      if (data.patched_source) {
+        const downloadBtn = document.getElementById("download-patched-btn");
+        downloadBtn.addEventListener("click", () => {
+          const baseName = (data.filename || "uploaded.c").replace(/\.[^./]+$/, "");
+          const ext = (data.filename || "uploaded.c").match(/\.[^./]+$/)?.[0] || ".c";
+          const downloadName = `${baseName}_patched${ext}`;
+
+          const blob = new Blob([data.patched_source], { type: "text/plain" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = downloadName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        });
+      }
     }
   } catch (err) {
     uploadResults.innerHTML = `<p class="upload-empty">Error contacting backend: ${err.message}</p>`;
