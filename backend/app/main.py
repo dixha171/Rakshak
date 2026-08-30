@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import sys
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -21,6 +21,7 @@ from kavach.cli import BENCHMARKS
 from kavach.models import VulnerabilityFinding
 from kavach.analyzers.static_analyzer import StaticAnalyzer
 from kavach.agents.orchestrator import Orchestrator
+from kavach.agents.patch_agent import PatchAgent
 from kavach.ledger.audit_ledger import AuditLedger
 
 app = FastAPI(title="KAVACH API", version="0.1.0")
@@ -90,4 +91,61 @@ def get_ledger():
     return {
         "records": ledger.all_records(),
         "chain_ok": ledger.verify_chain(),
+    }
+
+
+MAX_UPLOAD_BYTES = 200_000  # 200 KB — plenty for a single source file
+
+
+@app.post("/api/analyze")
+async def analyze_upload(file: UploadFile = File(None), source: str = Form(None)):
+    """
+    Static-analysis + suggested-patch endpoint for arbitrary user-submitted
+    C source. Deliberately does NOT compile or execute the uploaded code:
+    this backend is a public URL, and running stranger-submitted C via gcc
+    would be a remote-code-execution hole in the service itself. This
+    endpoint only reads the text and reasons about it.
+    """
+    if file is not None:
+        raw = await file.read()
+        if len(raw) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="File too large (200 KB limit)")
+        try:
+            source_text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="File must be UTF-8 text")
+        filename = file.filename or "uploaded.c"
+    elif source:
+        if len(source.encode("utf-8")) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Source too large (200 KB limit)")
+        source_text = source
+        filename = "uploaded.c"
+    else:
+        raise HTTPException(status_code=400, detail="Provide a file upload or a 'source' form field")
+
+    analyzer = StaticAnalyzer()
+    findings = analyzer.analyze_source(filename, source_text)
+
+    patch_agent = PatchAgent(config=DEFAULT_CONFIG)
+    results = []
+    for finding in findings:
+        finding.file_path = filename
+        patch = patch_agent.synthesize(finding, source_text)
+        results.append(
+            {
+                "cwe": finding.cwe,
+                "line": finding.line,
+                "function": finding.function,
+                "description": finding.description,
+                "severity": finding.severity.value,
+                "patch_diff": patch.diff,
+                "patch_rationale": patch.rationale,
+            }
+        )
+
+    return {
+        "filename": filename,
+        "finding_count": len(findings),
+        "findings": results,
+        "note": "Static analysis + suggested patch only. Uploaded code is never compiled or executed.",
     }
