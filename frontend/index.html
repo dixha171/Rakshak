@@ -35,6 +35,24 @@
 
     <section class="grid" id="benchmark-grid"></section>
 
+    <section class="upload-section">
+      <div class="upload-head">
+        <h2>Analyze Your Own C File</h2>
+        <p class="upload-note">Static analysis + a suggested patch only — uploaded code is never compiled or executed on the server.</p>
+      </div>
+      <div class="upload-body">
+        <textarea id="upload-textarea" placeholder="Paste C source here, or choose a file below…"></textarea>
+        <div class="upload-controls">
+          <label class="file-btn">
+            CHOOSE FILE
+            <input type="file" id="upload-file" accept=".c,.h,.cc,.cpp" hidden />
+          </label>
+          <button class="run-btn" id="analyze-btn">ANALYZE</button>
+        </div>
+      </div>
+      <div class="upload-results" id="upload-results"></div>
+    </section>
+
     <section class="ledger-section">
       <div class="ledger-head">
         <h2>Audit Ledger</h2>
