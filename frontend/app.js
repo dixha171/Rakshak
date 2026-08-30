@@ -1,4 +1,4 @@
-const API_BASE = "";
+const API_BASE = "https://rakshak-847v.onrender.com";
 const grid = document.getElementById("benchmark-grid");
 const backendStatusEl = document.getElementById("backend-status");
 const backendLabelEl = document.getElementById("backend-label");
