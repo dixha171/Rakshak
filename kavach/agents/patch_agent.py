@@ -1,6 +1,6 @@
 """
 Patch agent: synthesizes minimal-diff (< 10 LOC) source patches.
- 
+
 Two modes:
   - Heuristic/template mode (default, works air-gapped): applies a small
     library of proven fix patterns keyed by CWE — bounds checks before
@@ -13,43 +13,43 @@ Two modes:
     verification or exceeds the max diff-line budget.
 """
 from __future__ import annotations
- 
+
 import difflib
 import re
- 
+
 from kavach.config import KavachConfig, DEFAULT_CONFIG
 from kavach.models import VulnerabilityFinding, PatchCandidate
 from kavach.languages import pipeline_for, display_name
 from kavach.agents import llm_client
 from kavach.agents.llm_client import LLMError
- 
+
 MARKER_RE = re.compile(r"BEGIN_FILE\s*\n(.*?)\nEND_FILE", re.DOTALL)
 CODE_FENCE_RE = re.compile(r"```(?:[a-zA-Z]*)\n(.*?)```", re.DOTALL)
- 
+
 PATCH_PROMPT_TEMPLATE = """You are a {language} security-patch generator. Fix ONE specific
 weakness with the smallest possible change. Do not refactor, rename, or reformat
 anything you don't have to touch.
- 
+
 CWE: {cwe}
 File: {file_path}
 Function/module: {function}
 Description: {description}
- 
+
 Full current file contents, between the BEGIN_FILE and END_FILE markers below:
 BEGIN_FILE
 {source}
 END_FILE
- 
+
 Respond with ONLY the complete, corrected file contents, wrapped between
 BEGIN_FILE and END_FILE markers exactly like above. No explanation, no
 commentary, nothing outside the markers.
 """
- 
- 
+
+
 class PatchAgent:
     def __init__(self, config: KavachConfig = DEFAULT_CONFIG):
         self.config = config
- 
+
     def synthesize(self, finding: VulnerabilityFinding, source: str) -> PatchCandidate:
         # Heuristic and generic-regex fixes below are C-syntax-specific
         # (memcpy/free/malloc). For any other language, skip straight to
@@ -58,16 +58,16 @@ class PatchAgent:
         # way — see kavach.agents.review_gate for why — but we still try
         # to produce a *suggested* diff for a human to review.
         is_c = finding.language == "c"
- 
+
         patched = self._apply_heuristic(finding, source) if is_c else None
         generic = False
         llm_assisted = False
- 
+
         if patched is None and is_c:
             patched = self._apply_generic_pattern_fix(finding, source)
             if patched is not None:
                 generic = True
- 
+
         if patched is None and self.config.is_network_enabled():
             try:
                 patched = self._apply_llm(finding, source)
@@ -79,7 +79,7 @@ class PatchAgent:
                     diff="",
                     rationale=f"No template matched this case, and LLM-assisted patching failed: {exc}",
                 )
- 
+
         if patched is None:
             return PatchCandidate(
                 finding_id=finding.id,
@@ -87,7 +87,7 @@ class PatchAgent:
                 diff="",
                 rationale=self._no_patch_rationale(finding),
             )
- 
+
         diff_lines = list(
             difflib.unified_diff(
                 source.splitlines(keepends=True),
@@ -100,13 +100,13 @@ class PatchAgent:
         changed_lines = sum(
             1 for line in diff_lines if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
         )
- 
+
         rationale = self._rationale_for(finding.cwe)
         if llm_assisted:
             rationale = f"[LLM-assisted, backend={self.config.backend.value}] {rationale}"
         elif generic:
             rationale = f"[generic pattern fix — review before applying] {rationale}"
- 
+
         return PatchCandidate(
             finding_id=finding.id,
             file_path=finding.file_path,
@@ -118,7 +118,7 @@ class PatchAgent:
                 else (f"patch_agent+{self.config.backend.value}" if llm_assisted else "patch_agent+generic")
             ),
         )
- 
+
     def _no_patch_rationale(self, finding: VulnerabilityFinding) -> str:
         if finding.language == "c" and finding.cwe in ("CWE-120", "CWE-119"):
             return (
@@ -140,7 +140,7 @@ class PatchAgent:
             "(set KAVACH_BACKEND to cloud_claude/cloud_openai/local_ollama with the matching "
             "API key/host to enable it)."
         )
- 
+
     def _apply_llm(self, finding: VulnerabilityFinding, source: str) -> str:
         """Sends the file + finding context to the configured backend and
         expects back the complete patched file contents in a code fence.
@@ -155,18 +155,18 @@ class PatchAgent:
             source=source,
         )
         response_text = llm_client.get_llm_response(prompt, self.config)
- 
+
         match = MARKER_RE.search(response_text) or CODE_FENCE_RE.search(response_text)
         if not match:
             raise LLMError("LLM response contained neither BEGIN_FILE/END_FILE markers nor a code fence")
- 
+
         patched = match.group(1)
         if not patched.strip():
             raise LLMError("LLM response's code fence was empty")
         if not patched.endswith("\n"):
             patched += "\n"
         return patched
- 
+
     def _rationale_for(self, cwe: str) -> str:
         return {
             "CWE-119": "Added an explicit upper-bounds check before memcpy() so the copy size can never exceed the destination buffer's capacity.",
@@ -174,7 +174,7 @@ class PatchAgent:
             "CWE-416": "Cleared the caller's pointer to NULL immediately after free() and added a NULL guard in the consumer, preventing use-after-free.",
             "CWE-190": "Replaced the raw multiplication with an overflow-checked size computation before the allocation.",
         }.get(cwe, "Applied minimal-diff defensive fix for the identified CWE.")
- 
+
     def _apply_heuristic(self, finding: VulnerabilityFinding, source: str) -> str | None:
         if finding.cwe in ("CWE-119", "CWE-120") and "memcpy(out->payload" in source:
             return source.replace(
@@ -185,7 +185,7 @@ class PatchAgent:
                 "    }\n"
                 "    memcpy(out->payload, raw + 2, len);",
             )
- 
+
         if finding.cwe == "CWE-416" and "void session_logout" in source:
             patched = source.replace(
                 "void session_logout(AuthSession *session) {\n"
@@ -210,7 +210,7 @@ class PatchAgent:
                 "    int rc = (s == NULL) ? -1 : session_touch(s);",
             )
             return patched
- 
+
         if finding.cwe == "CWE-190" and "int total = num_samples * sample_size" in source:
             patched = source.replace(
                 "    int total = num_samples * sample_size; /* BUG: no overflow check */\n"
@@ -240,9 +240,9 @@ class PatchAgent:
                 "    }",
             )
             return patched
- 
+
         return None
- 
+
     def _apply_generic_pattern_fix(self, finding: VulnerabilityFinding, source: str) -> str | None:
         """
         Fixes that are mechanically safe to auto-generate on ARBITRARY code,
@@ -257,7 +257,7 @@ class PatchAgent:
         if idx < 0 or idx >= len(lines):
             return None
         target_line = lines[idx]
- 
+
         if finding.cwe == "CWE-416":
             m = re.match(r"^(\s*)free\(\s*([\w.\->]+)\s*\)\s*;", target_line)
             if not m:
@@ -273,7 +273,7 @@ class PatchAgent:
                 f"{indent}{ptr_expr} = NULL; /* patched: prevent use-after-free */\n"
             )
             return "".join(new_lines)
- 
+
         if finding.cwe == "CWE-190":
             m = re.match(r"^(\s*)((?:\w[\w\s\*]*?))\s*=\s*malloc\(\s*(\w+)\s*\*\s*(\w+)\s*\)\s*;", target_line)
             if not m:
@@ -300,9 +300,9 @@ class PatchAgent:
                 f"{indent}}}\n"
             )
             return "".join(new_lines)
- 
+
         return None
- 
+
     def apply_all(self, findings: list[VulnerabilityFinding], source: str) -> tuple[str, list[str]]:
         """
         Applies every finding's available fix (heuristic or generic) into a
@@ -310,7 +310,7 @@ class PatchAgent:
         number down to the lowest: since each fix only replaces/extends its
         own flagged line, editing bottom-up means earlier (lower) line
         numbers never shift out from under a not-yet-processed finding.
- 
+
         Findings with no available fix (e.g. strcpy/memcpy needing real
         buffer-size context) are simply skipped, not faked. Returns
         (patched_source, applied_labels) so the caller can show which
@@ -328,7 +328,7 @@ class PatchAgent:
                 working = candidate
                 applied.append(f"{f.cwe} line {f.line} ({f.function or 'top-level'})")
         return working, applied
- 
+
     def companion_header_patch(self, finding: VulnerabilityFinding, header_source: str) -> str | None:
         """Some fixes (e.g. the CWE-416 double-pointer contract change) also
         require updating the paired header's declaration. Returns the
@@ -339,4 +339,3 @@ class PatchAgent:
                 "void session_logout(AuthSession **session);",
             )
         return None
- 
