@@ -284,6 +284,30 @@ class PatchAgent:
 
         return None
 
+    def apply_all(self, findings: list[VulnerabilityFinding], source: str) -> tuple[str, list[str]]:
+        """
+        Applies every finding's available fix (heuristic or generic) into a
+        single combined file. Findings are processed from the highest line
+        number down to the lowest: since each fix only replaces/extends its
+        own flagged line, editing bottom-up means earlier (lower) line
+        numbers never shift out from under a not-yet-processed finding.
+
+        Findings with no available fix (e.g. strcpy/memcpy needing real
+        buffer-size context) are simply skipped, not faked. Returns
+        (patched_source, applied_labels) so the caller can show which
+        findings actually got folded into the combined file.
+        """
+        working = source
+        applied: list[str] = []
+        for f in sorted(findings, key=lambda finding: finding.line, reverse=True):
+            candidate = self._apply_heuristic(f, working)
+            if candidate is None:
+                candidate = self._apply_generic_pattern_fix(f, working)
+            if candidate is not None and candidate != working:
+                working = candidate
+                applied.append(f"{f.cwe} line {f.line} ({f.function or 'top-level'})")
+        return working, applied
+
     def companion_header_patch(self, finding: VulnerabilityFinding, header_source: str) -> str | None:
         """Some fixes (e.g. the CWE-416 double-pointer contract change) also
         require updating the paired header's declaration. Returns the
