@@ -2,6 +2,9 @@
 KAVACH command-line interface.
 
     kavach run <target-name>       - run the full triage->patch->verify pipeline on one target
+                                      (stops for human review if the finding is gated — see
+                                      kavach.agents.review_gate)
+    kavach approve <target-name>   - approve a target's pending review and apply+verify it
     kavach ledger                  - print the audit ledger and verify its hash chain
     kavach benchmarks              - list available benchmark targets
 """
@@ -49,14 +52,7 @@ def cmd_benchmarks(_args: argparse.Namespace) -> None:
         print(f"{name:15s} {meta['cwe']:10s} {meta['description']}")
 
 
-def cmd_run(args: argparse.Namespace) -> None:
-    target = BENCHMARKS.get(args.target)
-    if not target:
-        print(f"Unknown target '{args.target}'. Run `kavach benchmarks` to list options.", file=sys.stderr)
-        sys.exit(2)
-
-    sys.path.insert(0, REPO_ROOT)
-
+def _resolve_finding(target: dict) -> VulnerabilityFinding:
     analyzer = StaticAnalyzer()
     findings = analyzer.analyze_file(target["source"])
     findings = [f for f in findings if f.cwe == target["cwe"]] or [
@@ -64,16 +60,49 @@ def cmd_run(args: argparse.Namespace) -> None:
     ]
     finding = findings[0]
     finding.file_path = target["source"]
+    return finding
 
-    orchestrator = Orchestrator(config=DEFAULT_CONFIG)
-    outcome = orchestrator.run(finding, target["source"], target["test_module"], header_path=target.get("header"))
 
-    print(f"Target: {args.target} ({target['cwe']})")
+def _print_outcome(args_target: str, target: dict, outcome) -> None:
+    print(f"Target: {args_target} ({target['cwe']})")
     for line in outcome.log:
         print(f"  - {line}")
     print(f"Final state: {outcome.state.value}")
     if outcome.verification:
         print(f"Verification: {outcome.verification.status.value} in {outcome.verification.duration_ms:.1f}ms")
+    if outcome.state.value == "pending_review":
+        print(f"\nThis finding requires human review before it can be applied. Run:")
+        print(f"  kavach approve {args_target}")
+        print("once you've reviewed the reasons above.")
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    target = BENCHMARKS.get(args.target)
+    if not target:
+        print(f"Unknown target '{args.target}'. Run `kavach benchmarks` to list options.", file=sys.stderr)
+        sys.exit(2)
+
+    sys.path.insert(0, REPO_ROOT)
+    finding = _resolve_finding(target)
+    orchestrator = Orchestrator(config=DEFAULT_CONFIG)
+    outcome = orchestrator.run(finding, target["source"], target["test_module"], header_path=target.get("header"))
+    _print_outcome(args.target, target, outcome)
+
+
+def cmd_approve(args: argparse.Namespace) -> None:
+    target = BENCHMARKS.get(args.target)
+    if not target:
+        print(f"Unknown target '{args.target}'. Run `kavach benchmarks` to list options.", file=sys.stderr)
+        sys.exit(2)
+
+    sys.path.insert(0, REPO_ROOT)
+    finding = _resolve_finding(target)
+    orchestrator = Orchestrator(config=DEFAULT_CONFIG)
+    outcome = orchestrator.run(
+        finding, target["source"], target["test_module"],
+        header_path=target.get("header"), force_apply=True,
+    )
+    _print_outcome(args.target, target, outcome)
 
 
 def cmd_ledger(_args: argparse.Namespace) -> None:
@@ -96,6 +125,10 @@ def main() -> None:
     run_parser = sub.add_parser("run")
     run_parser.add_argument("target", help="benchmark target name (see `kavach benchmarks`)")
     run_parser.set_defaults(func=cmd_run)
+
+    approve_parser = sub.add_parser("approve")
+    approve_parser.add_argument("target", help="benchmark target name whose pending review you're approving")
+    approve_parser.set_defaults(func=cmd_approve)
 
     sub.add_parser("ledger").set_defaults(func=cmd_ledger)
 
