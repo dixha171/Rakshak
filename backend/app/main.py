@@ -18,7 +18,7 @@ sys.path.insert(0, REPO_ROOT)
 
 from kavach.config import DEFAULT_CONFIG
 from kavach.cli import BENCHMARKS
-from kavach.models import VulnerabilityFinding
+from kavach.models import VulnerabilityFinding, AuditRecord
 from kavach.analyzers.static_analyzer import StaticAnalyzer
 from kavach.agents.orchestrator import Orchestrator
 from kavach.agents.patch_agent import PatchAgent
@@ -177,6 +177,7 @@ async def analyze_upload(
     findings = analyzer.analyze_source(filename, source_text, language=resolved_language)
 
     patch_agent = PatchAgent(config=DEFAULT_CONFIG)
+    ledger = AuditLedger(DEFAULT_CONFIG.ledger_db_path)
     results = []
     includable_findings = []
     for finding in findings:
@@ -203,8 +204,36 @@ async def analyze_upload(
                 "has_fix": bool(patch.diff),
             }
         )
-        if not decision.requires_review or is_approved:
-            includable_findings.append(finding)
+
+        # Ledger logging policy: only log findings with an actual fix to
+        # act on — a bare scan with nothing actionable isn't worth an audit
+        # entry. Outcome labels are deliberately different from the
+        # benchmark pipeline's "certified": nothing here has gone through
+        # compile + exploit-replay + regression, so "suggested_included"
+        # signals a lower confidence level than a real Triple-Lock
+        # certification, and the ledger stays honest about the difference.
+        if patch.diff:
+            if not decision.requires_review or is_approved:
+                includable_findings.append(finding)
+                ledger.record(
+                    AuditRecord(
+                        finding_id=finding.id,
+                        patch_id=patch.id,
+                        verification_id="",
+                        patch_sha256="",
+                        outcome="suggested_included",
+                    )
+                )
+            elif decision.requires_review:
+                ledger.record(
+                    AuditRecord(
+                        finding_id=finding.id,
+                        patch_id=patch.id,
+                        verification_id="",
+                        patch_sha256="",
+                        outcome="pending_review",
+                    )
+                )
 
     patched_source, applied_labels = patch_agent.apply_all(includable_findings, source_text)
     combined_patch_available = bool(applied_labels) and patched_source != source_text
