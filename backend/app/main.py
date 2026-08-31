@@ -23,7 +23,7 @@ from kavach.analyzers.static_analyzer import StaticAnalyzer
 from kavach.agents.orchestrator import Orchestrator
 from kavach.agents.patch_agent import PatchAgent
 from kavach.agents import review_gate
-from kavach.languages import pipeline_for, display_name
+from kavach.languages import pipeline_for, display_name, detect_language, extension_for
 from kavach.ledger.audit_ledger import AuditLedger
 
 app = FastAPI(title="KAVACH API", version="0.1.0")
@@ -150,11 +150,13 @@ async def analyze_upload(
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File must be UTF-8 text")
         filename = file.filename or "uploaded.txt"
+        was_pasted = False
     elif source:
         if len(source.encode("utf-8")) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="Source too large (200 KB limit)")
         source_text = source
-        filename = "uploaded.txt"  # no real extension to key off of for pasted text
+        filename = "uploaded.txt"  # placeholder; replaced below once language is resolved
+        was_pasted = True
     else:
         raise HTTPException(status_code=400, detail="Provide a file upload or a 'source' form field")
 
@@ -162,9 +164,17 @@ async def analyze_upload(
     if approved:
         approved_keys = {token.strip() for token in approved.split(",") if token.strip()}
 
-    analyzer = StaticAnalyzer()
     lang_override = language if language else None
-    findings = analyzer.analyze_source(filename, source_text, language=lang_override)
+    resolved_language = lang_override or detect_language(filename, source_text)
+
+    # Pasted text has no real filename to preserve — build one with the
+    # correct extension so the eventual download matches the language the
+    # person actually submitted, instead of a generic .txt.
+    if was_pasted:
+        filename = f"uploaded{extension_for(resolved_language)}"
+
+    analyzer = StaticAnalyzer()
+    findings = analyzer.analyze_source(filename, source_text, language=resolved_language)
 
     patch_agent = PatchAgent(config=DEFAULT_CONFIG)
     results = []
@@ -199,12 +209,10 @@ async def analyze_upload(
     patched_source, applied_labels = patch_agent.apply_all(includable_findings, source_text)
     combined_patch_available = bool(applied_labels) and patched_source != source_text
 
-    detected_language = findings[0].language if findings else None
-
     return {
         "filename": filename,
-        "language": detected_language,
-        "pipeline": pipeline_for(detected_language) if detected_language else None,
+        "language": resolved_language,
+        "pipeline": pipeline_for(resolved_language),
         "finding_count": len(findings),
         "findings": results,
         "patched_source": patched_source if combined_patch_available else None,
