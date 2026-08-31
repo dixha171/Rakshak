@@ -10,7 +10,6 @@
 </head>
 <body>
   <div class="scanline-overlay" aria-hidden="true"></div>
-
   <header class="topbar">
     <div class="brand">
       <svg class="brand-mark" viewBox="0 0 48 56" aria-hidden="true">
@@ -26,7 +25,6 @@
       <span id="backend-label">checking backend…</span>
     </div>
   </header>
-
   <main>
     <section class="upload-section">
       <div class="upload-head">
@@ -34,14 +32,14 @@
         <p class="upload-note">Static analysis + a suggested patch only — uploaded code is never compiled or executed on the server. Supports both the software pipeline (C, Python, JavaScript) and the hardware pipeline (Verilog, VHDL); hardware findings always require human review since there's no simulator here to prove a fix.</p>
       </div>
       <div class="upload-body">
-        <textarea id="upload-textarea" placeholder="Paste code here, or choose a file below…"></textarea>
+        <textarea id="upload-textarea" placeholder="Paste code here, or choose file(s) below…"></textarea>
         <div class="upload-controls">
           <label class="upload-label" for="language-select">Language</label>
           <select id="language-select">
             <option value="">Auto-detect</option>
           </select>
           <label class="file-btn">
-            CHOOSE FILE
+            CHOOSE FILE(S)
             <input type="file" id="upload-file" multiple accept=".c,.h,.cc,.cpp,.py,.js,.mjs,.jsx,.ts,.v,.sv,.vh,.vhd,.vhdl" hidden />
           </label>
           <button class="run-btn" id="analyze-btn">ANALYZE</button>
@@ -49,7 +47,6 @@
       </div>
       <div class="upload-results" id="upload-results"></div>
     </section>
-
     <section class="ledger-section">
       <div class="ledger-head">
         <h2>Audit Ledger</h2>
@@ -58,14 +55,13 @@
       <div class="ledger-table-wrap">
         <table class="ledger-table" id="ledger-table">
           <thead>
-            <tr><th>#</th><th>outcome</th><th>finding</th><th>patch</th><th>hash</th></tr>
+            <tr><th>#</th><th>outcome</th><th>finding</th><th>patch</th><th>hash</th><th>download</th></tr>
           </thead>
           <tbody></tbody>
         </table>
       </div>
     </section>
   </main>
-
   <script src="app.js"></script>
 </body>
 </html>
