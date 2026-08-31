@@ -97,7 +97,12 @@ def _ensure_fuzz_binary(target_name: str) -> str:
     if os.path.exists(binary):
         return binary
 
-    compiler = os.environ.get("CC", "clang")
+    # Default to gcc, not clang: this environment has gcc's ASan runtime
+    # (libasan) available — the same one the Triple-Lock verifier's own
+    # ASan builds already rely on — but not clang's matching
+    # libclang_rt.asan runtime package, which caused a linker failure
+    # here. Override with the CC env var if your environment differs.
+    compiler = os.environ.get("CC", "gcc")
     cmd = [
         compiler, "-fsanitize=address", "-g", "-O0",
         "-I", os.path.join(REPO_ROOT, "include"),
