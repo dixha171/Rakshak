@@ -1,130 +1,186 @@
-# KAVACH
+# 🛡️ KAVACH
 
-**Closed-loop vulnerability detection, patching, and verification for C/C++ codebases.**
+**A closed-loop, AI-assisted vulnerability defense system for both software and hardware source code — built for the AI Kavach challenge (defence & national security track).**
 
-KAVACH ("kavach" — Sanskrit for *shield/armor*) triages memory-safety defects found by static analysis and crash logs, synthesizes a minimal-diff source patch, applies it in a sandbox, and only certifies the fix once it survives a **Triple-Lock Verification**: exploit replay, functional regression, and a clean re-certification build. Every outcome — certified or rejected — is written to a tamper-evident, hash-chained audit ledger.
+KAVACH ingests source code — C/C++, Python, JavaScript on the software side; Verilog and VHDL on the hardware side — statically analyzes it for known danger patterns, synthesizes a minimal-diff patch where one can be safely generated, routes anything sensitive through a mandatory human review gate, and (for its benchmark targets) proves the fix actually works via a Triple-Lock verification pipeline before writing anything to a hash-chained, tamper-evident audit ledger.
+
+🔗 Live dashboard: [rakshak-1-83j2.onrender.com](https://rakshak-1-83j2.onrender.com)
+
+---
+
+## Why KAVACH
+
+Manually triaging and patching vulnerabilities in defence-adjacent codebases doesn't scale, and blind auto-patching is not an option when the code in question could end up running on real infrastructure. KAVACH is built around one governing idea: **automate what can be proven, and gate what can't.**
+
+- Finds known-dangerous patterns across five languages spanning two fundamentally different pipelines — software (compiled/interpreted, provably testable) and hardware (RTL, not provable in this environment)
+- Synthesizes a fix wherever a safe, minimal-diff template exists — and is explicit, not silent, about the cases where one doesn't
+- **Never** auto-applies a change without proof it works: the software pipeline's Triple-Lock (exploit replay + regression suite + clean rebuild) has to pass before anything is marked certified
+- **Never** auto-applies a change that can't be proven at all: every hardware finding, and every finding touching credentials, crypto, access control, or marked CRITICAL, is routed to a human — unconditionally, regardless of whether a suggested fix exists
+- Keeps every decision — certified, rejected, or pending human review — in a SHA-256 hash-chained ledger, so the audit trail itself can't be silently edited after the fact
+
+---
+
+## Architecture
 
 ```
-Static Analyzer ─┐
-                  ├──► Triage Agent ──► Patch Agent ──► Sandbox (compile/patch/verify) ──► Audit Ledger
-Crash Analyzer ──┘         │                                     │
-                     Evidence Graph                      Triple-Lock Verification
-                                                    (Exploit Replay + Regression + Certification)
+                    Operator Dashboard (HTML/JS)
+                              │
+                        HTTPS (FastAPI)
+                              │
+                     FastAPI Backend (backend/app)
+                              │
+              ┌───────────────┴───────────────┐
+              │                                │
+     Language Detection              Benchmark Orchestrator
+     (extension + content-sniff)     (state machine, retry/backtrack)
+              │                                │
+     Static Analyzer                  Patch Agent
+     (per-language danger rules)      (heuristic → generic pattern → LLM)
+              │                                │
+              └───────────────┬────────────────┘
+                               │
+                       Human Review Gate
+        (hardware pipeline · high-risk CWE · sensitive keyword ·
+                      CRITICAL severity)
+                               │
+                 ┌─────────────┴─────────────┐
+                 │                           │
+        Triple-Lock Verifier         (hardware: no verifier —
+    (exploit replay · regression ·    always routed to a human,
+        clean rebuild)                 fix or no fix available)
+                 │                           │
+                 └─────────────┬─────────────┘
+                               │
+              Hash-Chained Audit Ledger (SQLite)
+                               │
+              Ledger view + per-record HTML report export
 ```
 
-## Why it exists
+**Design principle:** a finding is either *proven* safe to auto-apply (software pipeline, passed Triple-Lock) or it goes to a human — there is no third option. Hardware findings are gated unconditionally, independent of severity or whether a fix template exists, because no synthesizer or simulator in this environment can prove an RTL change correct.
 
-Static analyzers find *patterns*. Fuzzers find *crashes*. Neither one, by itself, tells you whether a proposed fix actually closes the hole without breaking anything else. KAVACH closes that loop: it correlates both signal types into one evidence graph, generates the smallest patch that plausibly fixes the root cause, and refuses to certify anything that doesn't independently survive a fresh exploit attempt and the existing test suite.
+---
 
-## Benchmark targets
+## Core Features
 
-Three intentionally vulnerable C programs ship in this repo so the pipeline has something real to fix:
+| Module | What it does |
+|---|---|
+| **Multi-language static analysis** | Regex-based danger-pattern rules across C/C++, Python, JavaScript, Verilog, and VHDL — no AST/parser dependency, so it runs air-gapped |
+| **Auto language & pipeline detection** | Detects language from file extension, falling back to content-sniffing (`module`/`endmodule`, `entity`/`architecture`, etc.); routes each finding to the software or hardware pipeline automatically |
+| **Multi-file upload & analysis** | Analyze several files — software, hardware, or a mix — in a single pass, with independent findings and independent suggested fixes per file |
+| **Patch synthesis** | Three-tier fallback: hand-written heuristics for the benchmark targets → generic mechanically-safe pattern fixes (NULL-guards, overflow checks, secret→env-var swaps, HDL debug-fuse gating, HDL key redaction) → optional LLM-assisted patching for anything else |
+| **Human review gate** | A finding is gated if it's in the hardware pipeline, its CWE falls in a high-risk category (credentials, crypto, access control, hardware-security design flaws), its file/function name matches a sensitive keyword, or it's marked CRITICAL — reasons are always shown in full, never just the first one that fired |
+| **Triple-Lock verification** | For the benchmark C targets: exploit replay against an ASan build, a functional regression suite, and a final clean (no-sanitizer) rebuild — all three have to pass before a patch is marked `certified` |
+| **Per-finding retry/backtrack** | The orchestrator retries a failed patch up to a configured limit, rolling back cleanly between attempts, without blocking unrelated findings |
+| **Hash-chained audit ledger** | Every outcome — `certified`, `rejected`, `pending_review`, `suggested_included` — is recorded with a SHA-256 chain hash; the dashboard shows live chain-integrity verification |
+| **Audit report export** | Download any ledger record as a styled, standalone HTML report (serial number, outcome, finding/patch IDs, full hash) — printable to PDF directly from the browser |
+| **Operator dashboard** | Live backend status, per-file findings with inline diffs and rationale, approve/reject checkboxes for gated findings, and a full ledger view — all in a single-page vanilla JS/HTML console |
 
-| Target | CWE | Bug |
-|---|---|---|
-| `src/packet_parser.c` | CWE-119 | Tactical packet stream decoder — `memcpy` with no upper-bounds check against a fixed 256-byte buffer |
-| `src/auth_session.c` | CWE-416 | Auth session manager — `free()`d session pointer left dangling and reused |
-| `src/frame_alloc.c` | CWE-190 | Radar frame allocator — `int` multiplication overflow feeding `malloc()` |
+---
 
-Each has a matching header, a `tests/test_regression_*.py` exploit-replay + regression harness, and is confirmed to crash under AddressSanitizer before KAVACH touches it.
+## Tech Stack
 
-## Quick start
+**Core pipeline** — Python 3, standard library only (zero third-party dependencies by design, so the core stays usable air-gapped)
+
+**Benchmark targets** — C/C++, compiled with GCC/Clang and AddressSanitizer for exploit-replay verification
+
+**Static analysis** — Regex-based per-language danger-pattern rules (`static_analyzer.py`); swappable for a real parser front-end (libclang, an HDL front-end, etc.) per language without changing the rest of the pipeline
+
+**Patch synthesis** — Hand-written heuristics + generic mechanically-safe pattern fixes, with an optional LLM-assisted fallback via a stdlib `urllib` client — no SDK dependency, supports cloud (Claude, OpenAI) or local (Ollama) backends
+
+**Audit trail** — SQLite with a SHA-256 hash chain per record; no external database required
+
+**Backend** — FastAPI (`backend/app/main.py`)
+
+**Frontend** — Vanilla HTML/JS/CSS operator dashboard, no build step
+
+**Deployment** — Docker + docker-compose for local development; backend and dashboard deployed independently on Render for the live demo
+
+---
+
+## Project Structure
+
+```
+├── kavach/                     Core pipeline
+│   ├── config.py                   Runtime configuration (backend selection, limits)
+│   ├── cli.py                      Benchmark target registry + CLI entry point
+│   ├── models.py                   Shared dataclasses (Finding, PatchCandidate, VerificationResult, AuditRecord)
+│   ├── languages.py                Language detection + software/hardware pipeline routing
+│   ├── agents/
+│   │   ├── orchestrator.py             Closed-loop state machine (triage → patch → verify → ledger)
+│   │   ├── review_gate.py              Human-review gating criteria (single source of truth)
+│   │   ├── patch_agent.py              Patch synthesis: heuristic → generic pattern → LLM-assisted
+│   │   └── llm_client.py               Stdlib HTTP client for cloud/local LLM backends
+│   ├── analyzers/
+│   │   ├── static_analyzer.py          Multi-language danger-pattern rule engine
+│   │   └── crash_analyzer.py           ASan crash-log parser
+│   ├── sandbox/
+│   │   ├── patcher.py                  Applies/rolls back patches on disk
+│   │   └── verifier.py                 Triple-Lock verification (exploit replay, regression, clean rebuild)
+│   └── ledger/
+│       └── audit_ledger.py             Hash-chained SQLite audit trail
+├── backend/
+│   └── app/
+│       └── main.py                 FastAPI REST API (benchmark runs, multi-file analysis, ledger)
+├── frontend/                   Operator dashboard (static, no build step)
+│   ├── index.html
+│   ├── app.js
+│   └── styles.css
+├── src/                         Benchmark C targets (intentionally vulnerable, CWE-tagged)
+├── include/                     Headers for the benchmark targets
+├── tests/                       Per-target exploit-replay + regression modules
+└── docker-compose.yml           Full local stack
+```
+
+---
+
+## Getting Started
+
+### Prerequisites
+- Python 3.11+
+- GCC/Clang with AddressSanitizer (for running the benchmark targets locally)
+- Docker & Docker Compose (optional, for containerized runs)
+
+### Run the backend
 
 ```bash
+git clone https://github.com/dixha171/Rakshak.git
+cd Rakshak
 pip install -r requirements.txt
-
-# Run the full pipeline against all three targets and print a verification summary
-python run_demo.py
-
-# Or drive one target at a time via the CLI
-python -m kavach.cli benchmarks
-python -m kavach.cli run packet_parser
-python -m kavach.cli ledger
-
-# Start the API + operator dashboard
 uvicorn backend.app.main:app --reload --port 8000
-python -m http.server 8080 --directory frontend   # then open http://localhost:8080
 ```
 
-### Docker
+### Run the dashboard
 
 ```bash
-docker compose up --build
+cd frontend
+python -m http.server 8080
 ```
 
-Backend on `:8000`, dashboard on `:8080`.
+Then open `http://localhost:8080`. Set `API_BASE` in `frontend/app.js` to your backend's URL if it's not running on the same origin.
 
-## Package layout
+### Environment variables
 
-```
-include/, src/, tests/, Makefile      Benchmark targets (Step 1)
-kavach/config.py                       Zero-dependency LLM backend config (Cloud/Local/Air-gapped)
-kavach/models.py                       Shared schemas: Finding, CrashReport, PatchCandidate, VerificationResult, AuditRecord
-kavach/analyzers/static_analyzer.py    Danger-pattern scanner
-kavach/analyzers/crash_analyzer.py     ASan log parser + backtrace localizer
-kavach/agents/triage_agent.py          Correlates static + dynamic evidence into a graph
-kavach/agents/patch_agent.py           Synthesizes minimal-diff patches
-kavach/agents/orchestrator.py          Closed-loop state machine with retry/backtracking
-kavach/sandbox/compiler.py             Multi-compiler interface (GCC/Clang, ASan)
-kavach/sandbox/patcher.py              Atomic patch applicator with rollback
-kavach/sandbox/verifier.py             Triple-Lock Verification
-kavach/ledger/audit_ledger.py          Tamper-evident SQLite audit trail (SHA-256 hash chain)
-kavach/cli.py                          CLI: run / ledger / benchmarks
-backend/app/main.py                    FastAPI REST backend
-frontend/                              Operator web dashboard
-run_demo.py                            One-click evaluation suite
-docker/, docker-compose.yml            Container setup
-```
-
-## Verification summary
-
-Running `python run_demo.py` against the three benchmark targets yields:
+Only needed if you want LLM-assisted patching for cases with no template match:
 
 ```
-Buffer Overflow (CWE-119): Patched & Verified in ~120 ms
-Use-After-Free (CWE-416): Patched & Verified in ~120 ms
-Integer Overflow (CWE-190): Patched & Verified in ~115 ms
-Overall Accuracy: 100% Proven (0 Regressions)
+KAVACH_BACKEND=cloud_claude   # or cloud_openai / local_ollama
+ANTHROPIC_API_KEY=...         # or the equivalent for your chosen backend
 ```
 
-(Exact timings vary by machine.)
+The core pipeline — static analysis, heuristic/generic-pattern patching, the review gate, Triple-Lock verification, and the audit ledger — runs entirely offline with no configuration required.
 
-## Configuration
+---
 
-All backend selection is via environment variables (see `kavach/config.py`):
+## Scope & Honest Limitations
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `KAVACH_BACKEND` | `air_gapped` | `cloud_claude` \| `cloud_openai` \| `local_ollama` \| `air_gapped` |
-| `KAVACH_CC` | `gcc` | Preferred compiler |
-| `KAVACH_MAX_DIFF_LINES` | `14` | Patch diff-line budget before the orchestrator abandons a fix |
-| `KAVACH_MAX_RETRIES` | `3` | Retry/backtrack attempts per finding |
-| `KAVACH_LEDGER_DB` | `kavach_audit.sqlite3` | Audit ledger path |
+In the interest of the same explainability this project is built around:
 
-The default `air_gapped` backend uses only the heuristic patch-template library in `patch_agent.py` — no network calls, no API keys required.
+- **Full Triple-Lock verification is currently scoped to the three benchmark C targets.** The general-purpose multi-file upload endpoint (`/api/analyze`) deliberately does *not* compile or execute uploaded code — it's a public-facing endpoint, and running arbitrary uploaded code server-side would be a remote-code-execution hole in the service itself. Fixes suggested through that endpoint are labeled `suggested_included` in the ledger, distinct from a real `certified` outcome, so the audit trail stays honest about the difference.
+- **Hardware findings are always gated, by design.** There is no synthesizer or simulator in this environment to prove an RTL fix correct — a suggested HDL patch (where a template exists) is a starting point for a human hardware engineer to review and re-verify in a real toolchain, never something to trust and apply as-is.
+- **Patch coverage is intentionally partial, not exhaustive.** Some CWEs (e.g. `strcpy`/`memcpy` misuse) have no auto-generated fix at all, because a safe fix requires knowing the real destination buffer size — something a text-level scan can't reliably determine. The system says so explicitly rather than guessing.
 
-## LLM-assisted patching
+---
 
-For CWEs the heuristic template library doesn't cover, `PatchAgent` falls back to an LLM-assisted path (`kavach/agents/llm_client.py`, stdlib `urllib` only — no SDK dependency) whenever `KAVACH_BACKEND` is set to a network-enabled tier:
+## License
 
-```bash
-# Cloud Claude
-export KAVACH_BACKEND=cloud_claude
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# Cloud OpenAI
-export KAVACH_BACKEND=cloud_openai
-export OPENAI_API_KEY=sk-...
-
-# Local Ollama (no key needed, just a running `ollama serve`)
-export KAVACH_BACKEND=local_ollama
-export OLLAMA_HOST=http://localhost:11434
-export KAVACH_ANTHROPIC_MODEL=deepseek-coder:6.7b   # or set KAVACH_OLLAMA_MODEL
-```
-
-The agent sends the full vulnerable file plus the finding's CWE/function/description, asks for the complete corrected file back in a single code fence, diffs it against the original, and hands the result to the same Triple-Lock verifier as the heuristic path — an LLM-generated patch that fails exploit replay or regression gets rolled back and retried exactly like a heuristic one. Any backend failure (missing key, HTTP error, malformed response) raises `LLMError` internally and degrades to an empty patch candidate rather than crashing the pipeline, so `air_gapped` operation is never at risk from a misconfigured network tier.
-
-
-## Extending to real codebases
-
-`kavach/analyzers/static_analyzer.py` is a regex-based danger-pattern scanner by design (zero dependencies). For production use against a real codebase, swap in `libclang` for proper AST analysis — `StaticAnalyzer.analyze_file()`'s return type (`list[VulnerabilityFinding]`) is the integration point the rest of the pipeline consumes.
+This project is licensed under the [MIT License](./LICENSE).
