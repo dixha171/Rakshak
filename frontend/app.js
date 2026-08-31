@@ -99,32 +99,105 @@ analyzeBtn.addEventListener("click", async () => {
   await runAnalysis();
 });
 
-async function runAnalysis() {
-  const source = uploadTextarea.value.trim();
-  if (!source) {
-    uploadResults.innerHTML = `<p class="upload-empty">Paste some code or choose a file first.</p>`;
+function renderAnalysis(data) {
+  const filenames = Object.keys(data.files || {});
+  if (filenames.length === 0) {
+    uploadResults.innerHTML = `<p class="upload-empty">No results returned.</p>`;
     return;
   }
 
-  analyzeBtn.disabled = true;
-  analyzeBtn.textContent = "ANALYZING…";
-  uploadResults.innerHTML = `<p class="upload-empty">Scanning for known danger patterns…</p>`;
+  uploadResults.innerHTML = filenames.map((filename) => {
+    const fileData = data.files[filename];
+    return `
+      <div class="file-result-group">
+        <h3 style="font-family: var(--font-display); font-size: 16px; margin: 20px 0 10px;">${escapeHtml(filename)} <span class="pipeline-tag ${fileData.pipeline}">${fileData.pipeline}</span></h3>
+        ${renderFileFindings(filename, fileData)}
+      </div>
+    `;
+  }).join("");
 
-  try {
-    const formData = new FormData();
-    formData.append("source", source);
-    if (languageSelect.value) formData.append("language", languageSelect.value);
-    if (currentApprovedKeys.size) formData.append("approved", Array.from(currentApprovedKeys).join(","));
-    const res = await fetch(`${API_BASE}/api/analyze`, { method: "POST", body: formData });
-    const data = await res.json();
-    renderAnalysis(data);
-    loadLedger();
-  } catch (err) {
-    uploadResults.innerHTML = `<p class="upload-empty">Error contacting backend: ${err.message}</p>`;
-  } finally {
-    analyzeBtn.disabled = false;
-    analyzeBtn.textContent = "ANALYZE";
+  attachFindingListeners(data);
+
+  if (Object.values(data.files).some(f => f.patched_source)) {
+    // download buttons attached inside renderFileFindings; nothing extra needed here
   }
+}
+
+function renderFileFindings(filename, fileData) {
+  if (!fileData.findings || fileData.findings.length === 0) {
+    return `<p class="upload-empty">No known danger patterns matched for the detected language (${fileData.language || "unknown"}).</p>`;
+  }
+
+  let html = fileData.findings.map((f) => {
+    const showApprovalCheckbox = f.requires_human_review && f.has_fix;
+    return `
+      <div class="finding-card">
+        <div class="finding-head">
+          <span class="cwe-tag">${f.cwe}</span>
+          <strong>${f.function || "(top-level)"}</strong>
+          <span style="color:var(--text-dim); font-size:11px;">line ${f.line}</span>
+        </div>
+        <p class="desc">${f.description}</p>
+        ${f.patch_diff ? `<pre>${escapeHtml(f.patch_diff)}</pre>` : ""}
+        <div class="rationale">${f.patch_rationale}</div>
+        ${f.requires_human_review ? `
+          <div class="review-banner">
+            ⚠ Requires human review${f.approved ? " — approved, included below" : ""}:
+            <ul>${f.review_reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>
+            ${showApprovalCheckbox ? `
+              <label style="display:block; margin-top:8px; cursor:pointer;">
+                <input type="checkbox" class="approve-checkbox" data-key="${f.finding_key}" ${f.approved ? "checked" : ""} />
+                I've reviewed this and approve including its fix in the corrected file
+              </label>
+            ` : ""}
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }).join("");
+
+  if (fileData.patched_source) {
+    html += `
+      <div class="finding-card" style="border-left-color: var(--ok);">
+        <div class="finding-head"><strong>Fully Corrected File</strong></div>
+        <p class="desc">Includes every non-gated fixable finding, plus any gated finding you've explicitly approved above (${fileData.patched_applied.join(", ")}).</p>
+        <pre>${escapeHtml(fileData.patched_source)}</pre>
+        <button class="run-btn download-patched-btn" data-filename="${escapeHtml(filename)}" style="margin-top:8px;">DOWNLOAD CORRECTED FILE</button>
+      </div>
+    `;
+  }
+
+  return html;
+}
+
+function attachFindingListeners(data) {
+  uploadResults.querySelectorAll(".approve-checkbox").forEach((cb) => {
+    cb.addEventListener("change", async () => {
+      const key = cb.dataset.key;
+      if (cb.checked) currentApprovedKeys.add(key);
+      else currentApprovedKeys.delete(key);
+      await runAnalysis();
+    });
+  });
+
+  uploadResults.querySelectorAll(".download-patched-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const filename = btn.dataset.filename;
+      const fileData = data.files[filename];
+      const baseName = filename.replace(/\.[^./]+$/, "");
+      const ext = filename.match(/\.[^./]+$/)?.[0] || ".txt";
+      const downloadName = `${baseName}_patched${ext}`;
+      const blob = new Blob([fileData.patched_source], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = downloadName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  });
 }
 
 function renderAnalysis(data) {
