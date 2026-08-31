@@ -79,12 +79,17 @@ async function loadLanguages() {
 }
 loadLanguages();
 
+let selectedFiles = [];
+
 uploadFileInput.addEventListener("change", () => {
-  const file = uploadFileInput.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => { uploadTextarea.value = reader.result; };
-  reader.readAsText(file);
+  selectedFiles = Array.from(uploadFileInput.files);
+  if (selectedFiles.length === 0) return;
+
+  // For now, just show what got selected. We'll wire this into the
+  // actual analyze request in the next step.
+  const names = selectedFiles.map(f => f.name).join(", ");
+  uploadTextarea.value = `Selected ${selectedFiles.length} file(s): ${names}`;
+  uploadTextarea.disabled = true;
 });
 
 let currentApprovedKeys = new Set();
