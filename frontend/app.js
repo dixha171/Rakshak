@@ -30,7 +30,7 @@ async function loadLedger() {
     const data = await res.json();
     ledgerBody.innerHTML = "";
     if (!data.records.length) {
-      ledgerBody.innerHTML = `<tr class="empty-row"><td colspan="5">no runs recorded yet</td></tr>`;
+      ledgerBody.innerHTML = `<tr class="empty-row"><td colspan="6">no runs recorded yet</td></tr>`;
     } else {
       data.records.forEach((r) => {
         const tr = document.createElement("tr");
@@ -41,6 +41,17 @@ async function loadLedger() {
           <td>${r.patch_id || "—"}</td>
           <td>${(r.row_hash || "").slice(0, 12)}…</td>
         `;
+
+        const downloadTd = document.createElement("td");
+        const downloadBtn = document.createElement("button");
+        downloadBtn.className = "run-btn";
+        downloadBtn.style.padding = "4px 10px";
+        downloadBtn.style.fontSize = "10.5px";
+        downloadBtn.textContent = "DOWNLOAD";
+        downloadBtn.addEventListener("click", () => downloadLedgerRecord(r));
+        downloadTd.appendChild(downloadBtn);
+        tr.appendChild(downloadTd);
+
         ledgerBody.appendChild(tr);
       });
     }
@@ -48,8 +59,29 @@ async function loadLedger() {
     chainBadge.classList.toggle("ok", data.chain_ok);
     chainBadge.classList.toggle("bad", !data.chain_ok);
   } catch {
-    ledgerBody.innerHTML = `<tr class="empty-row"><td colspan="5">ledger unavailable — start the backend to view audit history</td></tr>`;
+    ledgerBody.innerHTML = `<tr class="empty-row"><td colspan="6">ledger unavailable — start the backend to view audit history</td></tr>`;
   }
+}
+
+function downloadLedgerRecord(record) {
+  // Dumps every field the backend sent for this record, not just the
+  // columns shown in the table — so anything present now or added later
+  // (verification_id, patch_sha256, recorded_at, etc.) is captured
+  // automatically without needing to update this function whenever the
+  // ledger schema grows.
+  const payload = {
+    serial: String(record.seq).padStart(4, "0"),
+    ...record,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `kavach_audit_${payload.serial}_${record.outcome}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 checkBackendStatus();
@@ -86,8 +118,8 @@ uploadFileInput.addEventListener("change", () => {
   if (selectedFiles.length === 0) return;
 
   // Multi-file selections can't be shown as editable text, so we just
-  // list what got picked and lock the textarea. Clearing the file input
-  // (see clearFileSelection below) re-enables pasting.
+  // list what got picked and lock the textarea. Choosing a new set of
+  // files (or none) re-runs this listener and updates the message.
   const names = selectedFiles.map((f) => f.name).join(", ");
   uploadTextarea.value = `Selected ${selectedFiles.length} file(s): ${names}`;
   uploadTextarea.disabled = true;
