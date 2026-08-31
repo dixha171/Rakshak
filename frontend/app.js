@@ -67,9 +67,6 @@ function downloadLedgerRecord(record) {
   const serial = String(record.seq).padStart(4, "0");
   const generatedAt = new Date().toLocaleString();
 
-  // Any field beyond the ones explicitly labeled below (e.g. a future
-  // verification_id or timestamp) still shows up, in a catch-all section —
-  // so nothing silently disappears if the ledger schema grows later.
   const knownFields = new Set(["seq", "outcome", "finding_id", "patch_id", "row_hash"]);
   const extraFields = Object.entries(record).filter(([k]) => !knownFields.has(k));
 
@@ -232,9 +229,6 @@ uploadFileInput.addEventListener("change", () => {
   selectedFiles = Array.from(uploadFileInput.files);
   if (selectedFiles.length === 0) return;
 
-  // Multi-file selections can't be shown as editable text, so we just
-  // list what got picked and lock the textarea. Choosing a new set of
-  // files (or none) re-runs this listener and updates the message.
   const names = selectedFiles.map((f) => f.name).join(", ");
   uploadTextarea.value = `Selected ${selectedFiles.length} file(s): ${names}`;
   uploadTextarea.disabled = true;
@@ -307,10 +301,6 @@ function renderFileFindings(filename, fileData) {
   }
 
   let html = fileData.findings.map((f) => {
-    // A finding needs an explicit approval checkbox only if it's gated AND
-    // has an actual fix to approve into the combined file. Non-gated fixes
-    // are always included automatically; gated findings with no available
-    // fix have nothing to approve (the rationale explains why).
     const showApprovalCheckbox = f.requires_human_review && f.has_fix;
     return `
       <div class="finding-card">
@@ -358,10 +348,6 @@ function renderFileFindings(filename, fileData) {
 }
 
 function attachFindingListeners(data) {
-  // Checkboxes re-run the analysis with the updated approval set so the
-  // combined file reflects exactly what's been checked. This re-hits the
-  // backend rather than trying to recompute the combine client-side, since
-  // the combine logic (line-shift-safe bottom-up application) lives there.
   uploadResults.querySelectorAll(".approve-checkbox").forEach((cb) => {
     cb.addEventListener("change", async () => {
       const key = cb.dataset.key;
@@ -396,4 +382,90 @@ function escapeHtml(str) {
   return str.replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
+}
+
+// --- Fuzzing ---
+const fuzzTargetSelect = document.getElementById("fuzz-target-select");
+const fuzzSecondsInput = document.getElementById("fuzz-seconds-input");
+const fuzzBtn = document.getElementById("fuzz-btn");
+const fuzzResults = document.getElementById("fuzz-results");
+
+async function loadFuzzTargets() {
+  try {
+    const res = await fetch(`${API_BASE}/api/fuzz-targets`);
+    if (!res.ok) throw new Error("bad response");
+    const targets = await res.json();
+    fuzzTargetSelect.innerHTML = "";
+    if (!targets.length) {
+      fuzzTargetSelect.innerHTML = `<option value="">no fuzzable targets configured</option>`;
+      fuzzBtn.disabled = true;
+      return;
+    }
+    targets.forEach((t) => {
+      const opt = document.createElement("option");
+      opt.value = t.name;
+      opt.textContent = t.has_seeds ? t.name : `${t.name} (no seeds yet)`;
+      fuzzTargetSelect.appendChild(opt);
+    });
+  } catch {
+    fuzzTargetSelect.innerHTML = `<option value="">backend unavailable</option>`;
+    fuzzBtn.disabled = true;
+  }
+}
+loadFuzzTargets();
+
+fuzzBtn.addEventListener("click", async () => {
+  const target = fuzzTargetSelect.value;
+  if (!target) return;
+
+  const seconds = Number(fuzzSecondsInput.value) || 20;
+
+  fuzzBtn.disabled = true;
+  fuzzBtn.textContent = "FUZZING…";
+  fuzzResults.innerHTML = `<p class="upload-empty">Fuzzing ${escapeHtml(target)} for ${seconds}s — this runs synchronously, hang tight…</p>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/fuzz`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, max_seconds: seconds }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    renderFuzzResults(data);
+    loadLedger();
+  } catch (err) {
+    fuzzResults.innerHTML = `<p class="upload-empty">Error: ${escapeHtml(err.message)}</p>`;
+  } finally {
+    fuzzBtn.disabled = false;
+    fuzzBtn.textContent = "FUZZ";
+  }
+});
+
+function renderFuzzResults(data) {
+  if (!data.crashes_found) {
+    fuzzResults.innerHTML = `<p class="upload-empty">No crashes found in this run for ${escapeHtml(data.target)}. That's not proof the target is safe — just that this run didn't find anything.</p>`;
+    return;
+  }
+
+  fuzzResults.innerHTML = data.outcomes.map((o) => `
+    <div class="finding-card">
+      <div class="finding-head">
+        <span class="cwe-tag">${escapeHtml(o.cwe)}</span>
+        <strong>${escapeHtml(data.target)}</strong>
+        <span class="pipeline-tag">${escapeHtml(o.state)}</span>
+      </div>
+      <p class="desc">${escapeHtml(o.description)}</p>
+      ${o.verification ? `<p class="rationale">Verification: ${escapeHtml(o.verification.status)} in ${o.verification.duration_ms.toFixed(1)}ms</p>` : ""}
+      ${o.review_reasons && o.review_reasons.length ? `
+        <div class="review-banner">
+          ⚠ Requires human review:
+          <ul>${o.review_reasons.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>
+        </div>
+      ` : ""}
+    </div>
+  `).join("");
 }
