@@ -11,6 +11,16 @@ Two modes:
     to the configured Cloud/Local backend and asks for a unified diff,
     then falls back to heuristic mode if the model's diff fails
     verification or exceeds the max diff-line budget.
+
+NOTE on hardware (Verilog/VHDL) fixes: this module CAN suggest a fix for
+some HDL findings (see _fix_hdl_debug_enable_* / _fix_hdl_hardcoded_key_*
+below), but a suggested fix existing does not change kavach.agents.
+review_gate's behavior — every hardware-pipeline finding is still gated
+unconditionally, because there is no synthesizer/simulator in this
+environment to prove any RTL change (suggested or not) is actually
+correct. A generated HDL diff here is a starting point for a human
+hardware engineer to review and re-verify in a real toolchain, never
+something to trust and apply as-is.
 """
 from __future__ import annotations
 
@@ -54,7 +64,7 @@ class PatchAgent:
         # Heuristic and generic-regex fixes below are C-syntax-specific
         # (memcpy/free/malloc). For any other language, skip straight to
         # the language-agnostic LLM path (or the honest "no fix" message).
-        # Hardware-pipeline languages never get an auto-applied fix either
+        # Hardware-pipeline languages never get an auto-APPLIED fix either
         # way — see kavach.agents.review_gate for why — but we still try
         # to produce a *suggested* diff for a human to review.
         is_c = finding.language == "c"
@@ -131,7 +141,7 @@ class PatchAgent:
         if pipeline_for(finding.language) == "hardware":
             return (
                 f"No template matched this {display_name(finding.language)} finding, and hardware findings "
-                "are never auto-fixed regardless — there's no synthesizer/simulator here to prove a fix. "
+                "are never auto-applied regardless — there's no synthesizer/simulator here to prove a fix. "
                 "Enable LLM-assisted patching for a suggested RTL change to review manually, or fix by hand "
                 "and re-verify in a real toolchain."
             )
@@ -173,6 +183,7 @@ class PatchAgent:
             "CWE-120": "Added an explicit upper-bounds check before memcpy() so the copy size can never exceed the destination buffer's capacity.",
             "CWE-416": "Cleared the caller's pointer to NULL immediately after free() and added a NULL guard in the consumer, preventing use-after-free.",
             "CWE-190": "Replaced the raw multiplication with an overflow-checked size computation before the allocation.",
+            "CWE-1191": "Replaced the hardcoded debug/JTAG enable literal with a fuse/lock-bit signal that defaults to DISABLED, so debug access is off unless explicitly and deliberately provisioned.",
         }.get(cwe, "Applied minimal-diff defensive fix for the identified CWE.")
 
     def _apply_heuristic(self, finding: VulnerabilityFinding, source: str) -> str | None:
@@ -251,6 +262,11 @@ class PatchAgent:
         real destination buffer size). Operates on the specific line the
         static analyzer flagged, not a literal string match against one
         known file.
+
+        Includes HDL (Verilog/VHDL) templates for CWE-1191 and CWE-798.
+        These produce a *suggested* diff only — kavach.agents.review_gate
+        gates every hardware finding unconditionally regardless of whether
+        a fix exists, since nothing here can prove an RTL change correct.
         """
         lines = source.splitlines(keepends=True)
         idx = finding.line - 1
@@ -304,6 +320,18 @@ class PatchAgent:
         if finding.cwe == "CWE-798" and finding.language in ("python", "javascript"):
             return self._fix_hardcoded_secret(finding, lines, idx, target_line)
 
+        if finding.cwe == "CWE-1191" and finding.language == "verilog":
+            return self._fix_hdl_debug_enable_verilog(lines, idx, target_line)
+
+        if finding.cwe == "CWE-1191" and finding.language == "vhdl":
+            return self._fix_hdl_debug_enable_vhdl(lines, idx, target_line)
+
+        if finding.cwe == "CWE-798" and finding.language == "verilog":
+            return self._fix_hdl_hardcoded_key_verilog(lines, idx, target_line)
+
+        if finding.cwe == "CWE-798" and finding.language == "vhdl":
+            return self._fix_hdl_hardcoded_key_vhdl(lines, idx, target_line)
+
         return None
 
     def _fix_hardcoded_secret(
@@ -349,6 +377,137 @@ class PatchAgent:
             return "".join(new_lines)
 
         return None
+
+    def _fix_hdl_debug_enable_verilog(self, lines: list[str], idx: int, target_line: str) -> str | None:
+        """
+        Fixes: `wire jtag_enable = 1'b1;` / `reg debug_en = 1'b1;` — a debug/
+        JTAG interface hardcoded permanently enabled with no gating at all.
+
+        The fix introduces a named parameter defaulting to DISABLED
+        (1'b0) and rewires the flagged signal to read from it, instead of
+        the bare literal. This does NOT make the design secure by itself —
+        a real design needs this tied to an actual fuse/lock-bit/OTP macro,
+        which this text-level fix has no way to know about — but it
+        replaces "permanently on, no override needed" with "off by default,
+        requires a deliberate synthesis-time override", which is a strict
+        improvement a human can review and wire correctly.
+        """
+        m = re.match(
+            r"^(\s*)(wire\s+|reg\s+)?([A-Za-z_]\w*)\s*=\s*1'b1\s*;(.*)$",
+            target_line,
+        )
+        if not m:
+            return None
+        indent, decl_kw, signal_name, trailing = m.groups()
+        decl_kw = decl_kw or "wire "
+        fuse_name = "DEBUG_ENABLE_FUSE"
+
+        new_lines = lines[:]
+        new_lines[idx] = (
+            f"{indent}parameter {fuse_name} = 1'b0; "
+            "// patched: defaults DISABLED — override only via a synthesis-time "
+            "parameter for an authorized debug build, and gate this behind a "
+            "real fuse/lock-bit before any production tapeout\n"
+            f"{indent}{decl_kw}{signal_name} = {fuse_name};{trailing}\n"
+        )
+        return "".join(new_lines)
+
+    def _fix_hdl_debug_enable_vhdl(self, lines: list[str], idx: int, target_line: str) -> str | None:
+        """
+        Fixes the declaration form:
+            signal debug_enable : std_logic := '1';
+        by introducing a named constant defaulting to DISABLED and
+        rewiring the signal's initial value to reference it, instead of
+        the bare '1' literal. Same caveat as the Verilog version: this is
+        a starting point for a human to wire to a real fuse/lock-bit
+        mechanism, not a certified fix.
+        """
+        m = re.match(
+            r"^(\s*)signal\s+([A-Za-z_]\w*)\s*:\s*std_logic\s*:=\s*'1'\s*;(.*)$",
+            target_line,
+            re.IGNORECASE,
+        )
+        if not m:
+            return None
+        indent, signal_name, trailing = m.groups()
+        fuse_name = "DEBUG_ENABLE_FUSE"
+
+        new_lines = lines[:]
+        new_lines[idx] = (
+            f"{indent}constant {fuse_name} : std_logic := '0'; "
+            "-- patched: defaults DISABLED — override only via a real "
+            "fuse/lock-bit input for an authorized debug build, never "
+            "hardcode enabled in production\n"
+            f"{indent}signal {signal_name} : std_logic := {fuse_name};{trailing}\n"
+        )
+        return "".join(new_lines)
+
+    def _fix_hdl_hardcoded_key_verilog(self, lines: list[str], idx: int, target_line: str) -> str | None:
+        """
+        Fixes: `parameter [31:0] device_key = 32'hDEADBEEF;` (with or
+        without an explicit bit-width range). Zeroes out the literal key
+        value, keeping its radix/width prefix intact, and adds a comment
+        explaining WHY: a fixed key baked into a parameter default is
+        extractable via bitstream readback/side-channel analysis and can
+        never be rotated post-fabrication. This does not (and cannot,
+        from a text scan) provision a real key — it flags the constant as
+        a placeholder that must be replaced by a proper secure
+        key-injection/eFuse/OTP mechanism before use.
+        """
+        m = re.match(
+            r"^(\s*)(param(?:eter)?|localparam)\s+(\[[^\]]*\]\s*)?([A-Za-z_]\w*)\s*=\s*(\d*'h[0-9a-fA-F]+)\s*;(.*)$",
+            target_line,
+            re.IGNORECASE,
+        )
+        if not m:
+            return None
+        indent, kw, width, name, value, trailing = m.groups()
+        width = width or ""
+
+        value_match = re.match(r"(\d*'h)([0-9a-fA-F]+)", value)
+        if not value_match:
+            return None
+        zero_value = value_match.group(1) + "0" * len(value_match.group(2))
+
+        new_lines = lines[:]
+        new_lines[idx] = (
+            f"{indent}{kw} {width}{name} = {zero_value}; "
+            "// patched: placeholder zero key — a fixed key baked into RTL "
+            "can never be rotated and is extractable via readback/side-"
+            "channel analysis; provision the real key via a secure "
+            "key-injection/eFuse/OTP macro at integration time, not as a "
+            "literal parameter default\n"
+        )
+        return "".join(new_lines)
+
+    def _fix_hdl_hardcoded_key_vhdl(self, lines: list[str], idx: int, target_line: str) -> str | None:
+        """
+        Fixes: `constant device_key : std_logic_vector(31 downto 0) :=
+        x"CAFEBABE";`. Same treatment as the Verilog version — zeroes out
+        the literal hex value in place, keeps the type declaration intact,
+        and explains why a human still needs to wire a real key-injection
+        mechanism before this is production-safe.
+        """
+        m = re.match(
+            r'^(\s*)constant\s+([A-Za-z_]\w*)\s*:(.*?):=\s*x"([0-9a-fA-F]+)"\s*;(.*)$',
+            target_line,
+            re.IGNORECASE,
+        )
+        if not m:
+            return None
+        indent, name, type_part, hex_value, trailing = m.groups()
+        zero_value = "0" * len(hex_value)
+
+        new_lines = lines[:]
+        new_lines[idx] = (
+            f'{indent}constant {name} :{type_part}:= x"{zero_value}"; '
+            "-- patched: placeholder zero key — a fixed key baked into RTL "
+            "can never be rotated and is extractable via readback/side-"
+            "channel analysis; provision the real key via a secure "
+            "key-injection/eFuse/OTP macro at integration time, not as a "
+            "literal constant\n"
+        )
+        return "".join(new_lines)
 
     def apply_all(self, findings: list[VulnerabilityFinding], source: str) -> tuple[str, list[str]]:
         """
