@@ -66,8 +66,17 @@ FUZZ_TARGETS = {
     "packet_parser": {
         "binary": os.path.join(FUZZ_BUILD_DIR, "packet_parser_asan"),
         "seed_dir": os.path.join(REPO_ROOT, "fuzz", "seeds", "packet_parser"),
-        "build_sources": [os.path.join(REPO_ROOT, "src", "packet_parser.c")],
-        "mode": "stdin",  # switch to "argv" if the target reads a file path instead
+        # packet_parser.c's own PACKET_PARSER_STANDALONE main() always
+        # replays one fixed hardcoded overflow and never reads external
+        # input, so it can't be fuzzed directly — build_sources instead
+        # combines packet_parser.c (compiled WITHOUT that define, so its
+        # main() is left out) with a small harness main() that actually
+        # reads the fuzzer's bytes from stdin. See fuzz/harness/.
+        "build_sources": [
+            os.path.join(REPO_ROOT, "src", "packet_parser.c"),
+            os.path.join(REPO_ROOT, "fuzz", "harness", "packet_parser_fuzz_main.c"),
+        ],
+        "mode": "stdin",
     },
 }
 
