@@ -113,6 +113,7 @@ async function runAnalysis() {
     const res = await fetch(`${API_BASE}/api/analyze`, { method: "POST", body: formData });
     const data = await res.json();
     renderAnalysis(data);
+    loadLedger();
   } catch (err) {
     uploadResults.innerHTML = `<p class="upload-empty">Error contacting backend: ${err.message}</p>`;
   } finally {
