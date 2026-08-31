@@ -64,20 +64,135 @@ async function loadLedger() {
 }
 
 function downloadLedgerRecord(record) {
-  // Dumps every field the backend sent for this record, not just the
-  // columns shown in the table — so anything present now or added later
-  // (verification_id, patch_sha256, recorded_at, etc.) is captured
-  // automatically without needing to update this function whenever the
-  // ledger schema grows.
-  const payload = {
-    serial: String(record.seq).padStart(4, "0"),
-    ...record,
-  };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const serial = String(record.seq).padStart(4, "0");
+  const generatedAt = new Date().toLocaleString();
+
+  // Any field beyond the ones explicitly labeled below (e.g. a future
+  // verification_id or timestamp) still shows up, in a catch-all section —
+  // so nothing silently disappears if the ledger schema grows later.
+  const knownFields = new Set(["seq", "outcome", "finding_id", "patch_id", "row_hash"]);
+  const extraFields = Object.entries(record).filter(([k]) => !knownFields.has(k));
+
+  const outcomeColor = record.outcome === "certified" ? "#6FA287"
+    : record.outcome === "rejected" ? "#C1443B"
+    : "#C9A15B";
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>KAVACH Audit Report — #${serial}</title>
+<style>
+  body {
+    background: #0B0F0E;
+    color: #E7EDEA;
+    font-family: 'IBM Plex Sans', Arial, sans-serif;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 48px 32px;
+  }
+  h1 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 24px;
+    letter-spacing: 0.05em;
+    margin: 0 0 4px;
+  }
+  .subtitle {
+    color: #9AAAA6;
+    font-size: 12px;
+    font-family: 'IBM Plex Mono', monospace;
+    margin: 0 0 32px;
+  }
+  .field-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid #263133;
+  }
+  .field-label {
+    color: #9AAAA6;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .field-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    text-align: right;
+    max-width: 60%;
+    word-break: break-all;
+  }
+  .outcome-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border: 1px solid ${outcomeColor};
+    color: ${outcomeColor};
+    border-radius: 2px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+  .footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid #263133;
+    color: #4B5D62;
+    font-size: 11px;
+    font-family: 'IBM Plex Mono', monospace;
+    line-height: 1.6;
+  }
+  @media print {
+    body { background: #fff; color: #000; }
+    .field-label, .subtitle, .footer { color: #555; }
+    .field-row { border-color: #ccc; }
+  }
+</style>
+</head>
+<body>
+  <h1>KAVACH — Audit Record</h1>
+  <p class="subtitle">closed-loop vulnerability defense — hash-chained audit ledger</p>
+
+  <div class="field-row">
+    <span class="field-label">Serial No.</span>
+    <span class="field-value">#${serial}</span>
+  </div>
+  <div class="field-row">
+    <span class="field-label">Outcome</span>
+    <span class="field-value"><span class="outcome-badge">${escapeHtml(record.outcome || "—")}</span></span>
+  </div>
+  <div class="field-row">
+    <span class="field-label">Finding ID</span>
+    <span class="field-value">${escapeHtml(record.finding_id || "—")}</span>
+  </div>
+  <div class="field-row">
+    <span class="field-label">Patch ID</span>
+    <span class="field-value">${escapeHtml(record.patch_id || "—")}</span>
+  </div>
+  <div class="field-row">
+    <span class="field-label">Record Hash</span>
+    <span class="field-value">${escapeHtml(record.row_hash || "—")}</span>
+  </div>
+  ${extraFields.map(([k, v]) => `
+  <div class="field-row">
+    <span class="field-label">${escapeHtml(k.replace(/_/g, " "))}</span>
+    <span class="field-value">${escapeHtml(String(v ?? "—"))}</span>
+  </div>`).join("")}
+
+  <div class="footer">
+    Report generated ${escapeHtml(generatedAt)}.<br/>
+    This record is one entry in KAVACH's hash-chained audit ledger. Verify
+    chain integrity via the dashboard's "chain" badge before treating this
+    record as authoritative — a report exported from a tampered chain
+    would still show these values as they were recorded.
+  </div>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: "text/html" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `kavach_audit_${payload.serial}_${record.outcome}.json`;
+  a.download = `kavach_audit_report_${serial}_${record.outcome}.html`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
