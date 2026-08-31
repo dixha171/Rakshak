@@ -118,6 +118,7 @@ async def analyze_upload(
     file: UploadFile = File(None),
     source: str = Form(None),
     language: str = Form(None),
+    approved: str = Form(None),
 ):
     """
     Static-analysis + suggested-patch endpoint for arbitrary user-submitted
@@ -134,8 +135,11 @@ async def analyze_upload(
     a last resort.
 
     Findings that trip the human review gate (see kavach.agents.review_gate)
-    are flagged as such and excluded from the combined "fully corrected
-    file" output — they're shown individually instead, for manual review.
+    are excluded from the combined "fully corrected file" output UNLESS
+    their "cwe:line" identifier appears in `approved` (a comma-separated
+    list, e.g. "CWE-798:17,CWE-502:8") — the explicit signal that a human
+    reviewed that specific finding and wants its suggested fix included.
+    Non-gated findings with an available fix are always included.
     """
     if file is not None:
         raw = await file.read()
@@ -154,17 +158,23 @@ async def analyze_upload(
     else:
         raise HTTPException(status_code=400, detail="Provide a file upload or a 'source' form field")
 
+    approved_keys = set()
+    if approved:
+        approved_keys = {token.strip() for token in approved.split(",") if token.strip()}
+
     analyzer = StaticAnalyzer()
     lang_override = language if language else None
     findings = analyzer.analyze_source(filename, source_text, language=lang_override)
 
     patch_agent = PatchAgent(config=DEFAULT_CONFIG)
     results = []
-    non_gated_findings = []
+    includable_findings = []
     for finding in findings:
         finding.file_path = filename
         patch = patch_agent.synthesize(finding, source_text)
         decision = review_gate.evaluate(finding)
+        finding_key = f"{finding.cwe}:{finding.line}"
+        is_approved = finding_key in approved_keys
         results.append(
             {
                 "cwe": finding.cwe,
@@ -178,12 +188,15 @@ async def analyze_upload(
                 "patch_rationale": patch.rationale,
                 "requires_human_review": decision.requires_review,
                 "review_reasons": decision.reasons,
+                "finding_key": finding_key,
+                "approved": is_approved,
+                "has_fix": bool(patch.diff),
             }
         )
-        if not decision.requires_review:
-            non_gated_findings.append(finding)
+        if not decision.requires_review or is_approved:
+            includable_findings.append(finding)
 
-    patched_source, applied_labels = patch_agent.apply_all(non_gated_findings, source_text)
+    patched_source, applied_labels = patch_agent.apply_all(includable_findings, source_text)
     combined_patch_available = bool(applied_labels) and patched_source != source_text
 
     detected_language = findings[0].language if findings else None
@@ -197,6 +210,6 @@ async def analyze_upload(
         "patched_source": patched_source if combined_patch_available else None,
         "patched_applied": applied_labels,
         "note": "Static analysis + suggested patch only. Uploaded code is never compiled or executed. "
-                "Findings requiring human review (see each finding's review_reasons) are excluded from "
-                "the combined corrected-file output.",
+                "Findings requiring human review are excluded from the combined corrected-file output "
+                "unless explicitly approved.",
     }
