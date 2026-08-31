@@ -47,6 +47,28 @@
       </div>
       <div class="upload-results" id="upload-results"></div>
     </section>
+
+    <section class="upload-section" id="fuzz-section">
+      <div class="upload-head">
+        <h2>Fuzz a Benchmark Target</h2>
+        <p class="upload-note">Runs mutated inputs against a compiled target looking for crashes nobody's written a test for yet. Any crash found goes through the same triage → patch → review → verify pipeline as everything else.</p>
+      </div>
+      <div class="upload-body">
+        <div class="upload-controls" style="width: auto; flex-direction: row; align-items: flex-end; gap: 14px;">
+          <div>
+            <label class="upload-label" for="fuzz-target-select">Target</label>
+            <select id="fuzz-target-select"></select>
+          </div>
+          <div>
+            <label class="upload-label" for="fuzz-seconds-input">Seconds</label>
+            <input type="number" id="fuzz-seconds-input" value="20" min="5" max="120" style="width: 70px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-body); font-size: 12px; padding: 8px;" />
+          </div>
+          <button class="run-btn" id="fuzz-btn" style="width: auto; padding: 10px 20px;">FUZZ</button>
+        </div>
+      </div>
+      <div class="upload-results" id="fuzz-results"></div>
+    </section>
+
     <section class="ledger-section">
       <div class="ledger-head">
         <h2>Audit Ledger</h2>
