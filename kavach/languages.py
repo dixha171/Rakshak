@@ -85,3 +85,17 @@ def pipeline_for(language: str) -> str:
 
 def display_name(language: str) -> str:
     return LANGUAGE_DISPLAY_NAME.get(language, language)
+
+
+def extension_for(language: str) -> str:
+    """Default file extension to use when writing/downloading a file for
+    a given language (the reverse of EXTENSION_LANGUAGE_MAP, since that
+    map has several extensions pointing at the same language)."""
+    defaults = {
+        "c": ".c",
+        "python": ".py",
+        "javascript": ".js",
+        "verilog": ".v",
+        "vhdl": ".vhd",
+    }
+    return defaults.get(language, ".txt")
