@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import List
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +18,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 sys.path.insert(0, REPO_ROOT)
 
 from kavach.config import DEFAULT_CONFIG
-from kavach.cli import BENCHMARKS
+from kavach.cli import BENCHMARKS, FUZZ_TARGETS, _ensure_fuzz_binary
 from kavach.models import VulnerabilityFinding, AuditRecord
 from kavach.analyzers.static_analyzer import StaticAnalyzer
 from kavach.agents.orchestrator import Orchestrator
@@ -25,6 +26,7 @@ from kavach.agents.patch_agent import PatchAgent
 from kavach.agents import review_gate
 from kavach.languages import pipeline_for, display_name, detect_language, extension_for
 from kavach.ledger.audit_ledger import AuditLedger
+from kavach.fuzzing.fuzzer import fuzz_target
 
 app = FastAPI(title="KAVACH API", version="0.1.0")
 
@@ -38,6 +40,12 @@ app.add_middleware(
 
 class RunRequest(BaseModel):
     target: str
+    approve: bool = False
+
+
+class FuzzRequest(BaseModel):
+    target: str
+    max_seconds: float = 20.0
     approve: bool = False
 
 
@@ -92,6 +100,79 @@ def run_target(req: RunRequest):
     }
 
 
+@app.get("/api/fuzz-targets")
+def list_fuzz_targets():
+    """Targets currently configured for fuzzing (see kavach.cli.FUZZ_TARGETS).
+    A target can exist in BENCHMARKS without being fuzzable — fuzzing needs
+    a byte-stream-shaped target plus a seed corpus, which not every
+    benchmark has today."""
+    return [
+        {
+            "name": name,
+            "seed_dir": cfg["seed_dir"],
+            "has_seeds": os.path.isdir(cfg["seed_dir"]) and bool(os.listdir(cfg["seed_dir"])),
+        }
+        for name, cfg in FUZZ_TARGETS.items()
+    ]
+
+
+@app.post("/api/fuzz")
+def fuzz_target_endpoint(req: FuzzRequest):
+    if req.target not in FUZZ_TARGETS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"'{req.target}' isn't configured for fuzzing. See FUZZ_TARGETS in kavach/cli.py.",
+        )
+
+    cfg = FUZZ_TARGETS[req.target]
+    if not os.path.isdir(cfg["seed_dir"]) or not os.listdir(cfg["seed_dir"]):
+        raise HTTPException(
+            status_code=400,
+            detail=f"No seed files in {cfg['seed_dir']}; add at least one example input first.",
+        )
+
+    try:
+        binary = _ensure_fuzz_binary(req.target)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"ASan build failed: {exc}")
+
+    findings = fuzz_target(binary, cfg["seed_dir"], max_seconds=req.max_seconds)
+
+    if not findings:
+        return {"target": req.target, "crashes_found": 0, "outcomes": []}
+
+    # Every crash gets run through the SAME triage -> patch -> review-gate
+    # -> verify pipeline as a statically-detected finding — a
+    # fuzzer-discovered bug is never treated as lower-scrutiny than one
+    # found any other way.
+    target = BENCHMARKS.get(req.target)
+    orchestrator = Orchestrator(config=DEFAULT_CONFIG)
+    outcomes = []
+    for finding in findings:
+        outcome = orchestrator.run(
+            finding, target["source"], target["test_module"],
+            header_path=target.get("header"), force_apply=req.approve,
+        )
+        outcomes.append({
+            "cwe": finding.cwe or "(unclassified)",
+            "description": finding.description,
+            "state": outcome.state.value,
+            "attempts": outcome.attempts,
+            "log": outcome.log,
+            "review_reasons": outcome.review_reasons,
+            "verification": (
+                {
+                    "status": outcome.verification.status.value,
+                    "duration_ms": outcome.verification.duration_ms,
+                }
+                if outcome.verification
+                else None
+            ),
+        })
+
+    return {"target": req.target, "crashes_found": len(findings), "outcomes": outcomes}
+
+
 @app.get("/api/languages")
 def list_languages():
     from kavach.languages import LANGUAGE_PIPELINE, LANGUAGE_DISPLAY_NAME
@@ -112,8 +193,6 @@ def get_ledger():
 
 MAX_UPLOAD_BYTES = 200_000  # 200 KB — plenty for a single source file
 
-
-from typing import List
 
 @app.post("/api/analyze")
 async def analyze_upload(
@@ -215,4 +294,3 @@ async def analyze_upload(
                 "Findings requiring human review are excluded from the combined corrected-file output "
                 "unless explicitly approved.",
     }
-   
