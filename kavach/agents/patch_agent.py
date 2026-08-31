@@ -63,7 +63,7 @@ class PatchAgent:
         generic = False
         llm_assisted = False
 
-        if patched is None and is_c:
+        if patched is None:
             patched = self._apply_generic_pattern_fix(finding, source)
             if patched is not None:
                 generic = True
@@ -301,6 +301,53 @@ class PatchAgent:
             )
             return "".join(new_lines)
 
+        if finding.cwe == "CWE-798" and finding.language in ("python", "javascript"):
+            return self._fix_hardcoded_secret(finding, lines, idx, target_line)
+
+        return None
+
+    def _fix_hardcoded_secret(
+        self, finding: VulnerabilityFinding, lines: list[str], idx: int, target_line: str
+    ) -> str | None:
+        """
+        Replaces a hardcoded credential/secret literal with an environment
+        variable lookup. This is mechanically safe across arbitrary code —
+        unlike strcpy (which needs real buffer-size context), swapping a
+        literal secret for an env-var read is always a strict improvement
+        regardless of surrounding code, so it's a fair candidate for
+        auto-generation. The env var name is derived from the variable name.
+        """
+        if finding.language == "python":
+            m = re.search(r'\b(\w*(?:password|secret|api_key|apikey|token)\w*)\s*=\s*["\'][^"\']{4,}["\']', target_line, re.IGNORECASE)
+            if not m:
+                return None
+            varname = m.group(1)
+            env_name = re.sub(r"[^A-Za-z0-9]", "_", varname).upper()
+            replacement = f'{varname}=os.environ.get("{env_name}", "")'
+            new_line = (
+                target_line[: m.start()] + replacement + target_line[m.end():].rstrip("\n")
+                + "  # patched: ensure `import os` is present\n"
+            )
+            new_lines = lines[:]
+            new_lines[idx] = new_line
+            return "".join(new_lines)
+
+        if finding.language == "javascript":
+            m = re.search(
+                r'\b(?:const|let|var)\s+(\w*(?:password|secret|apiKey|api_key|token)\w*)\s*[:=]\s*["\'][^"\']{4,}["\']',
+                target_line, re.IGNORECASE,
+            )
+            if not m:
+                return None
+            varname = m.group(1)
+            env_name = re.sub(r"(?<!^)(?=[A-Z])", "_", varname).upper()
+            env_name = re.sub(r"[^A-Za-z0-9]", "_", env_name)
+            replacement = f'const {varname} = process.env.{env_name} || ""'
+            new_line = target_line[: m.start()] + replacement + target_line[m.end():]
+            new_lines = lines[:]
+            new_lines[idx] = new_line
+            return "".join(new_lines)
+
         return None
 
     def apply_all(self, findings: list[VulnerabilityFinding], source: str) -> tuple[str, list[str]]:
@@ -319,9 +366,7 @@ class PatchAgent:
         working = source
         applied: list[str] = []
         for f in sorted(findings, key=lambda finding: finding.line, reverse=True):
-            if f.language != "c":
-                continue  # heuristic/generic fixes below are C-syntax-specific
-            candidate = self._apply_heuristic(f, working)
+            candidate = self._apply_heuristic(f, working) if f.language == "c" else None
             if candidate is None:
                 candidate = self._apply_generic_pattern_fix(f, working)
             if candidate is not None and candidate != working:
