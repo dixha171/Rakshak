@@ -210,6 +210,19 @@ In the interest of the same explainability this project is built around:
 
 ---
 
+## Team
+
+Built for the AI Kavach challenge by:
+
+| Name | GitHub |
+|---|---|
+| Dixha Bharti | [@dixha171](https://github.com/dixha171) |
+| Garima Sharma | [@garima-x](https://github.com/garima-x) |
+
+Contributions, issues, and feature requests are welcome — feel free to open a PR or start a discussion.
+
+---
+
 ## License
 
 This project is licensed under the [MIT License](./LICENSE).
